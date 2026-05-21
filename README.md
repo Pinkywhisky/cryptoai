@@ -81,12 +81,14 @@ Nouveaux modules :
 - `services/btc_correlation.py` : force relative altcoin vs BTC et ajustement de contexte.
 - `services/market_regime.py` : classification `RISK_ON`, `RISK_OFF`, `NEUTRAL`, `PANIC`, `SPECULATIVE`.
 - `services/backtesting.py` : simulation de signaux, winrate, gain/perte moyen, profit factor, expectancy, drawdown.
+- `services/journal_analytics.py` : analyse du journal trading, winrate, emotions, setups, accuracy IA et patterns utilisateur.
 
 Tables SQLite V5 :
 
 - `score_snapshots`
 - `backtest_results`
 - `market_cache`
+- `journal_entries`
 
 ## Marche cockpit principal
 
@@ -114,6 +116,28 @@ Types d'alertes :
 - `MARKET` : regime global defensif, BTC sous pression, retour de momentum ou reprise du volume.
 
 Les alertes sont triees par priorite produit : risques, opportunites, surveillance, puis contexte marche. Les alertes faibles ou redondantes sont filtrees pour limiter le bruit.
+
+## Journal Intelligence V5.2
+
+Le journal n'est plus une simple note manuelle. Chaque entree sauvegarde une decision personnelle et un snapshot IA complet au moment de l'action :
+
+- symbole et source de marche (`Spot`, `Alpha`, `Manuel`, `Inconnu`) ;
+- type de decision : `BUY`, `SELL`, `HOLD`, `WAIT`, `REINFORCE`, `CUT_LOSS` ;
+- type de trade : `SCALP`, `SWING`, `LONG_TERM`, `TEST`, `FOMO`, `REVENGE` ;
+- emotion : `CONFIDENT`, `FOMO`, `FEAR`, `IMPATIENT`, `STRESSED`, `CALM`, `GREED`, `REVENGE` ;
+- resultat : `OPEN`, `WIN`, `LOSS`, `BREAKEVEN`, `CANCELLED` ;
+- PnL %, PnL USDC et duree ;
+- score IA, trend, setup quality, trigger, regime de marche et snapshot JSON rejouable.
+
+Le dashboard affiche des statistiques de progression :
+
+- winrate global ;
+- gain moyen et perte moyenne ;
+- meilleur setup ;
+- emotion la plus risquee ;
+- comparaison entre decision IA et resultat reel.
+
+Objectif : relire ses decisions, identifier ses biais emotionnels, comprendre les bons/mauvais setups et ameliorer progressivement l'utilisation du moteur decisionnel.
 
 ## Scanner opportunites interne
 
@@ -357,7 +381,10 @@ Journal :
 ```text
 GET /api/journal
 POST /api/journal
+PUT /api/journal/{id}
 DELETE /api/journal/{id}
+GET /api/journal/stats
+GET /api/journal/analytics
 ```
 
 Marché :
@@ -417,6 +444,7 @@ Tables principales :
 - `market_history`
 - `positions`
 - `watch_candidates`
+- `journal_entries`
 - `trade_journal`
 - `binance_balances`
 - `binance_trades`
