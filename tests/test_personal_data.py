@@ -302,12 +302,31 @@ def test_invalid_symbols_do_not_break_listing_and_cleanup(tmp_path, monkeypatch)
     assert cleanup["invalid_symbols"] == ["CKP"]
 
 
-def test_journal_crud(tmp_path) -> None:
+def test_journal_crud(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.db"
+    monkeypatch.setattr(
+        personal_data,
+        "_build_journal_ai_snapshot",
+        lambda symbol: {
+            "resolution": {"symbol": "SOLUSDC", "market_source": "BINANCE_SPOT"},
+            "market": {
+                "symbol": "SOLUSDC",
+                "current_price": 100,
+                "global_score": 58,
+                "global_trend": "NEUTRAL",
+                "setup_quality": "MOYEN",
+                "triggers": {"label": "Absent"},
+            },
+            "decision": {"confidence": 62, "market_score": 50, "trigger_label": "Absent"},
+            "market_regime": {"regime": "NEUTRAL"},
+        },
+    )
     entry = personal_data.create_journal_entry(
         {
             "symbol": "solusdc",
-            "action": "SURVEILLANCE",
+            "decision_type": "WAIT",
+            "trade_type": "SWING",
+            "emotion": "CALM",
             "confidence": 70,
             "reason": "setup propre",
         },
@@ -318,6 +337,16 @@ def test_journal_crud(tmp_path) -> None:
 
     assert entries[0]["symbol"] == "SOLUSDC"
     assert entries[0]["confidence"] == 70
+    assert entries[0]["decision_type"] == "WAIT"
+    assert entries[0]["ai_score"] == 58
+    assert entries[0]["ai_snapshot"]["market"]["current_price"] == 100
+    updated = personal_data.update_journal_entry(
+        entry["id"],
+        {"result_status": "WIN", "pnl_percent": 3.2, "pnl_usdc": 1.4},
+        db_path=db_path,
+    )
+    assert updated["result_status"] == "WIN"
+    assert updated["pnl_percent"] == 3.2
     assert personal_data.delete_journal_entry(entry["id"], db_path=db_path) is True
 
 

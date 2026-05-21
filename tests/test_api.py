@@ -283,6 +283,53 @@ def test_api_market_keeps_alpha_watch_candidate_without_spot_scan(monkeypatch) -
     assert row["price_change_pct"] == -4.5
 
 
+def test_build_spot_market_row_keeps_decision_and_price() -> None:
+    row = app_module.build_spot_market_row(
+        {"symbol": "MORPHOUSDC", "sources": ["WATCHLIST"], "badges": ["Watchlist", "Spot"]},
+        {
+            "symbol": "MORPHOUSDC",
+            "current_price": 1.23,
+            "global_score": 54,
+            "global_trend": "NEUTRAL",
+        },
+        {
+            "decision": "WAIT",
+            "confidence": 58,
+            "trigger_label": "Absent",
+            "blocking_factors": ["Trigger absent"],
+        },
+    )
+
+    assert row["symbol"] == "MORPHOUSDC"
+    assert row["current_price"] == 1.23
+    assert row["trend"] == "NEUTRAL"
+    assert row["blocking_factor"] == "Trigger absent"
+
+
+def test_build_alpha_market_row_uses_partial_analysis_without_unknown() -> None:
+    row = app_module.build_alpha_market_row(
+        {
+            "symbol": "CKP",
+            "sources": ["WATCH_CANDIDATE", "BINANCE_ALPHA"],
+            "badges": ["Surveillance", "Alpha"],
+            "watch_info": {
+                "market_source": "BINANCE_ALPHA",
+                "current_price": 1.01,
+                "global_score": 44,
+                "global_trend": "BEARISH",
+                "setup_quality": "LIMITED",
+                "price_change_pct": -3.2,
+            },
+        }
+    )
+
+    assert row["current_price"] == 1.01
+    assert row["trend"] == "BEARISH"
+    assert row["blocking_factor"] == "Analyse Alpha partielle"
+    assert row["decision_engine"]["decision_label"] == "Surveillance Alpha"
+    assert row["trend"] != "UNKNOWN"
+
+
 def test_api_market_filters_unqualified_automatic_opportunity(monkeypatch) -> None:
     bad_opportunity = [{"symbol": "BADUSDC", "scan_score": 95, "reason": "Volume fort"}]
 
@@ -536,8 +583,13 @@ def test_repair_market_sources_route(monkeypatch) -> None:
 
 
 def test_journal_and_alerts_api_routes(monkeypatch) -> None:
-    monkeypatch.setattr(app_module, "list_journal", lambda: [{"id": 1, "symbol": "SOLUSDC"}])
+    monkeypatch.setattr(
+        app_module,
+        "list_journal",
+        lambda: [{"id": 1, "symbol": "SOLUSDC", "result_status": "WIN", "pnl_percent": 2}],
+    )
     monkeypatch.setattr(app_module, "create_journal_entry", lambda payload: {"id": 1, **payload})
+    monkeypatch.setattr(app_module, "update_journal_entry", lambda entry_id, payload: {"id": entry_id, **payload})
     monkeypatch.setattr(app_module, "delete_journal_entry", lambda entry_id: True)
     monkeypatch.setattr(app_module, "list_positions", lambda: [{"symbol": "BTCUSDC"}])
     monkeypatch.setattr(app_module, "list_watch_candidates", lambda: [])
@@ -545,6 +597,9 @@ def test_journal_and_alerts_api_routes(monkeypatch) -> None:
 
     assert client.get("/api/journal").json()[0]["symbol"] == "SOLUSDC"
     assert client.post("/api/journal", json={"symbol": "SOLUSDC", "action": "ATTENTE"}).json()["id"] == 1
+    assert client.put("/api/journal/1", json={"result_status": "WIN"}).json()["result_status"] == "WIN"
+    assert client.get("/api/journal/stats").json()["closed_trades"] == 1
+    assert client.get("/api/journal/analytics").json()["winrate"]["winrate"] == 100
     assert client.delete("/api/journal/1").json()["deleted"] is True
     assert client.get("/api/alerts").json()[0]["severity"] == "HIGH"
 

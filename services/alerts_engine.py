@@ -175,6 +175,85 @@ def build_alpha_alerts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return alerts
 
 
+def _score_history(row: dict[str, Any]) -> list[float]:
+    raw_history = row.get("score_history") or row.get("history") or []
+    values: list[float] = []
+    for item in raw_history:
+        try:
+            values.append(float(item.get("global_score") if isinstance(item, dict) else item))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def build_change_alerts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    alerts = []
+    for row in rows:
+        symbol = row.get("symbol")
+        history = _score_history(row)
+        if len(history) >= 2:
+            delta = history[-1] - history[-2]
+            if delta >= 12:
+                alerts.append(
+                    _alert(
+                        alert_type="OPPORTUNITY",
+                        severity="MEDIUM",
+                        symbol=symbol,
+                        title="Momentum en forte amélioration",
+                        message=f"Le score progresse de {round(delta, 1)} points depuis le dernier snapshot.",
+                        confidence=min(80, 55 + int(delta)),
+                        source="SCORE_HISTORY",
+                    )
+                )
+                continue
+            if delta <= -12:
+                alerts.append(
+                    _alert(
+                        alert_type="RISK",
+                        severity="MEDIUM",
+                        symbol=symbol,
+                        title="Score en dégradation rapide",
+                        message=f"Le score recule de {abs(round(delta, 1))} points depuis le dernier snapshot.",
+                        confidence=min(80, 55 + int(abs(delta))),
+                        source="SCORE_HISTORY",
+                    )
+                )
+                continue
+
+        change_pct = row.get("price_change_pct")
+        quote_volume = row.get("quote_volume")
+        try:
+            change = float(change_pct)
+            volume = float(quote_volume or 0)
+        except (TypeError, ValueError):
+            continue
+        if change >= 4 and volume >= 100_000:
+            alerts.append(
+                _alert(
+                    alert_type="OPPORTUNITY",
+                    severity="MEDIUM",
+                    symbol=symbol,
+                    title="Momentum prix-volume positif",
+                    message=f"Variation positive de {round(change, 2)}% avec volume exploitable.",
+                    confidence=62,
+                    source="MARKET_DATA",
+                )
+            )
+        elif change <= -6:
+            alerts.append(
+                _alert(
+                    alert_type="RISK",
+                    severity="MEDIUM",
+                    symbol=symbol,
+                    title="Pression vendeuse récente",
+                    message=f"Variation négative de {abs(round(change, 2))}% à surveiller.",
+                    confidence=60,
+                    source="MARKET_DATA",
+                )
+            )
+    return alerts
+
+
 def build_market_alerts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not rows:
         return []
@@ -201,6 +280,7 @@ def generate_ai_alerts(rows: list[dict[str, Any]], *, limit: int = 12) -> list[d
         + build_opportunity_alerts(rows)
         + build_watch_alerts(rows)
         + build_alpha_alerts(rows)
+        + build_change_alerts(rows)
         + build_market_alerts(rows)
     )
     deduped: dict[str, dict[str, Any]] = {}
@@ -211,4 +291,16 @@ def generate_ai_alerts(rows: list[dict[str, Any]], *, limit: int = 12) -> list[d
             deduped[key] = alert
     result = list(deduped.values())
     result.sort(key=lambda item: (TYPE_RANK[item["type"]], SEVERITY_RANK[item["severity"]], -item["confidence"]))
+    if not result and rows:
+        result.append(
+            _alert(
+                alert_type="MARKET",
+                severity="LOW",
+                symbol=None,
+                title="Marché sous observation",
+                message="Aucune alerte critique, mais le cockpit continue de suivre les variations de prix, score et tendance.",
+                confidence=45,
+                source="AI_ALERTS",
+            )
+        )
     return result[:limit]

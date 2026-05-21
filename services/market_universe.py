@@ -73,7 +73,7 @@ def _source_code(market_source: str | None, fallback_source: str | None = None, 
         return MARKET_SOURCE_SPOT
     if fallback == "MANUAL":
         return MARKET_SOURCE_MANUAL
-    if str(symbol or "").upper().endswith("USDC"):
+    if str(symbol or "").upper().endswith(("USDC", "USDT")):
         return MARKET_SOURCE_SPOT
     return MARKET_SOURCE_UNKNOWN
 

@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ MIN_POSITION_AMOUNT = 0.00000001
 MIN_ACTIVE_POSITION_VALUE_USDC = get_min_active_position_value_usdc()
 MIN_POSITION_VALUE_USDC = MIN_ACTIVE_POSITION_VALUE_USDC
 PUBLIC_BASE_URL = "https://api.binance.com"
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -725,6 +727,19 @@ def get_pnl_summary(db_path: Path | str = DB_PATH) -> dict[str, float]:
               AND status = 'CLOSED'
             """
         ).fetchone()
+        source_values = connection.execute(
+            """
+            SELECT COALESCE(market_source, 'BINANCE_SPOT') AS market_source,
+                   COALESCE(SUM(current_value), 0) AS current_value
+            FROM positions
+            WHERE synced_from_binance = 1
+              AND is_active = 1
+              AND status = 'ACTIVE'
+              AND COALESCE(current_value, 0) >= ?
+            GROUP BY COALESCE(market_source, 'BINANCE_SPOT')
+            """,
+            (MIN_ACTIVE_POSITION_VALUE_USDC,),
+        ).fetchall()
 
     total_invested = float(row["total_invested"])
     unrealized_pnl = float(row["unrealized_pnl"])
@@ -734,6 +749,10 @@ def get_pnl_summary(db_path: Path | str = DB_PATH) -> dict[str, float]:
     portfolio_value = current_value + usdc_available
     total_pnl = unrealized_pnl + realized_pnl
     active_positions = get_binance_positions(db_path=db_path)
+    value_by_source = {row["market_source"]: float(row["current_value"]) for row in source_values}
+    logger.info("[PORTFOLIO] Spot value : %.8f", value_by_source.get(MARKET_SOURCE_SPOT, 0.0))
+    logger.info("[PORTFOLIO] Alpha value : %.8f", value_by_source.get(MARKET_SOURCE_ALPHA, 0.0))
+    logger.info("[PORTFOLIO] Total value : %.8f", portfolio_value)
     return {
         "total_invested": round(total_invested, 8),
         "current_value": round(current_value, 8),

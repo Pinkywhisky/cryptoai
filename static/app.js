@@ -40,6 +40,10 @@ const watchFeedback = document.querySelector("#watchFeedback");
 const quickWatchForm = document.querySelector("#quickWatchForm");
 const marketFeedback = document.querySelector("#marketFeedback");
 const journalList = document.querySelector("#journalList");
+const journalStats = document.querySelector("#journalStats");
+const journalFilterSymbol = document.querySelector("#journalFilterSymbol");
+const journalFilterResult = document.querySelector("#journalFilterResult");
+const journalFilterEmotion = document.querySelector("#journalFilterEmotion");
 const aiAlertsList = document.querySelector("#aiAlertsList");
 const mobileCards = document.querySelector("#mobileCards");
 const mobileStatusText = document.querySelector("#mobileStatusText");
@@ -60,6 +64,8 @@ const journalForm = document.querySelector("#journalForm");
 let latestRows = [];
 let latestPositions = [];
 let latestWatchCandidates = [];
+let latestJournalEntries = [];
+let latestJournalAnalytics = null;
 let isRefreshing = false;
 let isSyncingBinance = false;
 let autoRefreshTimer = null;
@@ -87,6 +93,8 @@ function clearFrontendCache() {
   latestRows = [];
   latestPositions = [];
   latestWatchCandidates = [];
+  latestJournalEntries = [];
+  latestJournalAnalytics = null;
   historyCache.clear();
   openMobileCards.clear();
   closeDetailPanel();
@@ -216,6 +224,15 @@ function trendClass(trend) {
 function formatNumber(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
   return Number(value).toLocaleString("fr-FR", { maximumFractionDigits: digits });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function formatDateTime(value) {
@@ -1041,27 +1058,169 @@ function renderBinanceStatus(status) {
   if (settingsBinanceStatus) settingsBinanceStatus.textContent = text;
 }
 
-function renderJournal(entries) {
-  if (!entries.length) {
+function journalResultClass(status) {
+  const normalized = String(status || "OPEN").toUpperCase();
+  if (normalized === "WIN") return "pnl-positive";
+  if (normalized === "LOSS") return "pnl-negative";
+  if (normalized === "OPEN") return "status-open";
+  return "pnl-neutral";
+}
+
+function journalLabel(value) {
+  const labels = {
+    BUY: "Achat",
+    SELL: "Vente",
+    HOLD: "Conserver",
+    WAIT: "Attendre",
+    REINFORCE: "Renforcer",
+    CUT_LOSS: "Couper perte",
+    SCALP: "Scalp",
+    SWING: "Swing",
+    LONG_TERM: "Long terme",
+    TEST: "Test",
+    FOMO: "FOMO",
+    REVENGE: "Revanche",
+    CONFIDENT: "Confiant",
+    FEAR: "Peur",
+    IMPATIENT: "Impatient",
+    STRESSED: "Stressé",
+    CALM: "Calme",
+    GREED: "Avidité",
+    OPEN: "Ouvert",
+    WIN: "Win",
+    LOSS: "Loss",
+    BREAKEVEN: "Break-even",
+    CANCELLED: "Annulé",
+  };
+  return labels[String(value || "").toUpperCase()] || value || "-";
+}
+
+function filteredJournalEntries() {
+  const symbolFilter = journalFilterSymbol?.value?.trim().toUpperCase() || "";
+  const resultFilter = journalFilterResult?.value || "";
+  const emotionFilter = journalFilterEmotion?.value || "";
+  return latestJournalEntries.filter((entry) => {
+    const symbolMatch = !symbolFilter || String(entry.symbol || "").includes(symbolFilter);
+    const resultMatch = !resultFilter || entry.result_status === resultFilter;
+    const emotionMatch = !emotionFilter || entry.emotion === emotionFilter;
+    return symbolMatch && resultMatch && emotionMatch;
+  });
+}
+
+function renderJournalStats(analytics) {
+  if (!journalStats) return;
+  const winrate = analytics?.winrate || {};
+  const emotions = analytics?.emotions || {};
+  const setups = analytics?.setups || {};
+  const aiAccuracy = analytics?.ai_accuracy || {};
+  const riskyEmotion = emotions.riskiest_emotion?.emotion ? journalLabel(emotions.riskiest_emotion.emotion) : "-";
+  journalStats.innerHTML = `
+    <div class="journal-stat-card">
+      <span>Winrate</span>
+      <strong>${formatNumber(winrate.winrate, 2)}%</strong>
+      <small>${winrate.closed_trades ?? 0} trades clôturés</small>
+    </div>
+    <div class="journal-stat-card">
+      <span>Gain moyen</span>
+      <strong class="pnl-positive">${formatNumber(winrate.avg_gain, 2)}%</strong>
+      <small>Trades gagnants</small>
+    </div>
+    <div class="journal-stat-card">
+      <span>Perte moyenne</span>
+      <strong class="pnl-negative">${formatNumber(winrate.avg_loss, 2)}%</strong>
+      <small>Trades perdants</small>
+    </div>
+    <div class="journal-stat-card">
+      <span>Setup fort</span>
+      <strong>${escapeHtml(setups.best_setup?.setup || "-")}</strong>
+      <small>IA accuracy ${formatNumber(aiAccuracy.accuracy, 2)}%</small>
+    </div>
+    <div class="journal-stat-card">
+      <span>Émotion risquée</span>
+      <strong>${escapeHtml(riskyEmotion)}</strong>
+      <small>${formatNumber(emotions.riskiest_emotion?.winrate, 2)}% winrate</small>
+    </div>
+  `;
+}
+
+function journalSnapshotHtml(entry) {
+  const snapshot = entry.ai_snapshot || {};
+  const market = snapshot.market || {};
+  const decision = snapshot.decision || {};
+  const regime = snapshot.market_regime || {};
+  return `
+    <div class="journal-snapshot">
+      <div><span>Score IA</span><strong>${formatNumber(entry.ai_score, 0)}</strong></div>
+      <div><span>Trend</span><strong>${escapeHtml(entry.ai_trend || market.global_trend || "-")}</strong></div>
+      <div><span>Setup</span><strong>${escapeHtml(entry.ai_setup_quality || market.setup_quality || "-")}</strong></div>
+      <div><span>Trigger</span><strong>${escapeHtml(entry.ai_trigger || decision.trigger_label || "-")}</strong></div>
+      <div><span>Régime</span><strong>${escapeHtml(entry.ai_market_regime || regime.regime || "-")}</strong></div>
+      <div><span>Prix</span><strong>${formatNumber(market.current_price, 6)}</strong></div>
+    </div>
+    <p class="journal-replay">${escapeHtml(decision.reason_summary || market.market_error || "Snapshot IA sauvegardé au moment de l'entrée.")}</p>
+  `;
+}
+
+function renderJournal(entries, analytics = latestJournalAnalytics) {
+  latestJournalEntries = entries || [];
+  latestJournalAnalytics = analytics;
+  renderJournalStats(analytics);
+  const visibleEntries = filteredJournalEntries();
+
+  if (!visibleEntries.length) {
     journalList.innerHTML = `
       <div class="empty-panel">
         <strong>Aucune décision enregistrée.</strong>
+        <span>Ajoute une décision pour commencer à mesurer tes setups, émotions et résultats.</span>
         <button type="button" data-empty-add-journal>Ajouter une entrée</button>
       </div>
     `;
     return;
   }
-  journalList.innerHTML = entries.map((entry) => `
-    <div class="list-item" style="border-bottom: 1px solid var(--line); padding: 8px 0; display: flex; justify-content: space-between; align-items: center;">
-      <div style="display:flex; flex-direction:column; gap:2px;">
-        <strong>${entry.symbol} · ${entry.action} · ${entry.confidence ?? "-"}%</strong>
-        <span style="font-size:12px; color:var(--text);">${entry.reason ?? ""}</span>
-        <span style="font-size:11px; color:var(--muted);">${entry.emotion ?? ""} ${entry.result ? "· " + entry.result : ""}</span>
-        <small style="font-size:10px; color:var(--muted);">${formatDateTime(entry.created_at)}</small>
+  journalList.innerHTML = visibleEntries.map((entry) => {
+    const pnlClass = Number(entry.pnl_percent) > 0 ? "pnl-positive" : Number(entry.pnl_percent) < 0 ? "pnl-negative" : "pnl-neutral";
+    return `
+    <div class="journal-entry" data-journal-entry="${entry.id}">
+      <div class="journal-row-main">
+        <div class="journal-symbol">
+          <strong>${escapeHtml(entry.symbol)}</strong>
+          <small>${formatDateTime(entry.created_at)}</small>
+        </div>
+        <span class="badge neutral">${journalLabel(entry.decision_type)}</span>
+        <span class="badge medium">${journalLabel(entry.emotion)}</span>
+        <span>${formatNumber(entry.confidence, 0)}%</span>
+        <span>${formatNumber(entry.ai_score, 0)}</span>
+        <strong class="${journalResultClass(entry.result_status)}">${journalLabel(entry.result_status)}</strong>
+        <strong class="${pnlClass}">${formatNumber(entry.pnl_percent, 2)}%</strong>
+        <div class="journal-actions">
+          <button type="button" data-toggle-journal="${entry.id}">Détail</button>
+          <button type="button" data-close-journal="${entry.id}" data-result="WIN">Win</button>
+          <button type="button" data-close-journal="${entry.id}" data-result="LOSS">Loss</button>
+          <button type="button" data-delete-journal="${entry.id}">Supprimer</button>
+        </div>
       </div>
-      <button type="button" data-delete-journal="${entry.id}" style="height:24px; padding:0 8px; font-size:11px; background:var(--sell-bg); color:var(--sell); border-color:transparent;">Supprimer</button>
+      <div class="journal-row-note">${escapeHtml(entry.reason || entry.notes || "")}</div>
+      <div class="journal-entry-detail" id="journalDetail${entry.id}" hidden>
+        <div class="journal-detail-grid">
+          <div>
+            <h4>Replay IA</h4>
+            ${journalSnapshotHtml(entry)}
+          </div>
+          <div>
+            <h4>Résultat utilisateur</h4>
+            <div class="kv-grid compact">
+              <span>Type</span><strong>${journalLabel(entry.trade_type)}</strong>
+              <span>Source</span><strong>${marketSourceLabel(entry.market_source)}</strong>
+              <span>PnL USDC</span><strong class="${pnlClass}">${formatNumber(entry.pnl_usdc, 2)}</strong>
+              <span>Durée</span><strong>${formatNumber(entry.duration_minutes, 0)} min</strong>
+            </div>
+            <p>${escapeHtml(entry.notes || "Aucune note utilisateur.")}</p>
+          </div>
+        </div>
+      </div>
     </div>
-  `).join("");
+  `;
+  }).join("");
 }
 
 // --- CHARGEMENT DES FLUX DATA ---
@@ -1088,16 +1247,17 @@ async function loadMarket(force = false) {
 }
 
 async function loadPersonalData() {
-  const [positions, candidates, journal, pnl, binanceStatus] = await Promise.all([
+  const [positions, candidates, journal, journalAnalytics, pnl, binanceStatus] = await Promise.all([
     apiFetch("/api/positions"),
     apiFetch("/api/watch-candidates"),
     apiFetch("/api/journal"),
+    apiFetch("/api/journal/analytics"),
     apiFetch("/api/binance/pnl"),
     apiFetch("/api/binance/status"),
   ]);
   renderPositions(positions);
   renderWatchCandidates(candidates);
-  renderJournal(journal);
+  renderJournal(journal, journalAnalytics);
   renderPortfolioSummary(pnl, positions);
   renderBinanceStatus(binanceStatus);
 }
@@ -1145,17 +1305,23 @@ function scheduleAutoRefresh() {
   }, AUTO_REFRESH_MS);
 }
 
-async function createQuickJournal(symbol, action = "SURVEILLANCE") {
+async function createQuickJournal(symbol, decisionType = "WAIT") {
   await apiFetch("/api/journal", {
     method: "POST",
     body: JSON.stringify({
       symbol,
-      action,
+      decision_type: decisionType,
+      trade_type: "TEST",
+      emotion: "CALM",
       confidence: 50,
       reason: "Ajout rapide depuis le dashboard",
     }),
   });
-  renderJournal(await apiFetch("/api/journal"));
+  const [journal, analytics] = await Promise.all([
+    apiFetch("/api/journal"),
+    apiFetch("/api/journal/analytics"),
+  ]);
+  renderJournal(journal, analytics);
 }
 
 async function refreshMarketCockpit() {
@@ -1587,7 +1753,11 @@ journalForm.addEventListener("submit", async (event) => {
     body: JSON.stringify(formToPayload(journalForm)),
   });
   resetForm(journalForm);
-  renderJournal(await apiFetch("/api/journal"));
+  const [journal, analytics] = await Promise.all([
+    apiFetch("/api/journal"),
+    apiFetch("/api/journal/analytics"),
+  ]);
+  renderJournal(journal, analytics);
 });
 
 journalList.addEventListener("click", async (event) => {
@@ -1596,12 +1766,40 @@ journalList.addEventListener("click", async (event) => {
     focusForm(journalForm);
     return;
   }
+  const toggleButton = event.target.closest("[data-toggle-journal]");
+  if (toggleButton) {
+    const detail = document.querySelector(`#journalDetail${toggleButton.dataset.toggleJournal}`);
+    if (detail) detail.hidden = !detail.hidden;
+    return;
+  }
+  const closeButton = event.target.closest("[data-close-journal]");
+  if (closeButton) {
+    await apiFetch(`/api/journal/${closeButton.dataset.closeJournal}`, {
+      method: "PUT",
+      body: JSON.stringify({ result_status: closeButton.dataset.result }),
+    });
+    const [journal, analytics] = await Promise.all([
+      apiFetch("/api/journal"),
+      apiFetch("/api/journal/analytics"),
+    ]);
+    renderJournal(journal, analytics);
+    return;
+  }
   const deleteButton = event.target.closest("[data-delete-journal]");
   if (!deleteButton) return;
   const confirmed = window.confirm("Supprimer cette entrée de journal ?");
   if (!confirmed) return;
   await apiFetch(`/api/journal/${deleteButton.dataset.deleteJournal}`, { method: "DELETE" });
-  renderJournal(await apiFetch("/api/journal"));
+  const [journal, analytics] = await Promise.all([
+    apiFetch("/api/journal"),
+    apiFetch("/api/journal/analytics"),
+  ]);
+  renderJournal(journal, analytics);
+});
+
+[journalFilterSymbol, journalFilterResult, journalFilterEmotion].forEach((filter) => {
+  filter?.addEventListener("input", () => renderJournal(latestJournalEntries, latestJournalAnalytics));
+  filter?.addEventListener("change", () => renderJournal(latestJournalEntries, latestJournalAnalytics));
 });
 
 // --- ENCLENCHEMENT DE L'APPLICATION ---

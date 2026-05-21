@@ -262,3 +262,47 @@ def test_pnl_summary_excludes_inactive_positions(tmp_path):
     assert summary["inactive_symbols_count"] == 1
     assert summary["dust_count"] == 1
     assert summary["dust_value_usdc"] == 0.5
+
+
+def test_pnl_summary_includes_spot_and_alpha_positions(tmp_path):
+    db_path = tmp_path / "history.db"
+    init_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO positions (
+                symbol, quantity, average_buy_price, invested_amount,
+                current_value, realized_pnl, unrealized_pnl, total_pnl,
+                source, synced_from_binance, is_active, status, market_source,
+                created_at, updated_at
+            )
+            VALUES ('BTCUSDC', 0.001, 80000, 80, 82, 0, 2, 2,
+                    'BINANCE', 1, 1, 'ACTIVE', 'BINANCE_SPOT', 'now', 'now')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO positions (
+                symbol, quantity, average_buy_price, invested_amount,
+                current_value, realized_pnl, unrealized_pnl, total_pnl,
+                source, synced_from_binance, is_active, status, market_source,
+                created_at, updated_at
+            )
+            VALUES ('CKP', 10, 1.5, 15, 12, 0, -3, -3,
+                    'BINANCE', 1, 1, 'ACTIVE', 'BINANCE_ALPHA', 'now', 'now')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO binance_balances (asset, free, locked, total, updated_at)
+            VALUES ('USDC', 6, 0, 6, 'now')
+            """
+        )
+        connection.commit()
+
+    summary = binance_sync.get_pnl_summary(db_path=db_path)
+
+    assert summary["current_value"] == 94
+    assert summary["portfolio_value_usdc"] == 100
+    assert summary["unrealized_pnl"] == -1
+    assert summary["total_pnl"] == -1

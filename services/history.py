@@ -8,6 +8,7 @@ DB_PATH = Path(__file__).resolve().parent.parent / "database" / "history.db"
 RESETTABLE_TABLES = [
     "positions",
     "watch_candidates",
+    "journal_entries",
     "trade_journal",
     "alerts",
     "market_history",
@@ -110,6 +111,54 @@ def init_db(db_path: Path | str = DB_PATH) -> None:
             ("base_asset", "TEXT"),
         ]:
             _add_column_if_missing(connection, "watch_candidates", column, definition)
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                market_source TEXT,
+                decision_type TEXT,
+                trade_type TEXT,
+                emotion TEXT,
+                confidence INTEGER,
+                reason TEXT,
+                notes TEXT,
+                result_status TEXT DEFAULT 'OPEN',
+                pnl_percent REAL,
+                pnl_usdc REAL,
+                duration_minutes INTEGER,
+                ai_score INTEGER,
+                ai_trend TEXT,
+                ai_setup_quality TEXT,
+                ai_trigger TEXT,
+                ai_market_regime TEXT,
+                ai_market_score INTEGER,
+                ai_snapshot_json TEXT
+            )
+            """
+        )
+        for column, definition in [
+            ("market_source", "TEXT"),
+            ("decision_type", "TEXT"),
+            ("trade_type", "TEXT"),
+            ("emotion", "TEXT"),
+            ("confidence", "INTEGER"),
+            ("reason", "TEXT"),
+            ("notes", "TEXT"),
+            ("result_status", "TEXT DEFAULT 'OPEN'"),
+            ("pnl_percent", "REAL"),
+            ("pnl_usdc", "REAL"),
+            ("duration_minutes", "INTEGER"),
+            ("ai_score", "INTEGER"),
+            ("ai_trend", "TEXT"),
+            ("ai_setup_quality", "TEXT"),
+            ("ai_trigger", "TEXT"),
+            ("ai_market_regime", "TEXT"),
+            ("ai_market_score", "INTEGER"),
+            ("ai_snapshot_json", "TEXT"),
+        ]:
+            _add_column_if_missing(connection, "journal_entries", column, definition)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS trade_journal (

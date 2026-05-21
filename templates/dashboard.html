@@ -252,19 +252,69 @@
           </div>
           <form id="journalForm" class="compact-form">
             <input name="symbol" placeholder="BTCUSDC" required>
-            <select name="action">
-              <option>ATTENTE</option>
-              <option>SURVEILLANCE</option>
-              <option>ACHAT</option>
-              <option>VENTE</option>
-              <option>ERREUR</option>
+            <select name="decision_type">
+              <option value="WAIT">Attendre</option>
+              <option value="BUY">Achat</option>
+              <option value="SELL">Vente</option>
+              <option value="HOLD">Conserver</option>
+              <option value="REINFORCE">Renforcer</option>
+              <option value="CUT_LOSS">Couper perte</option>
+            </select>
+            <select name="trade_type">
+              <option value="TEST">Test</option>
+              <option value="SCALP">Scalp</option>
+              <option value="SWING">Swing</option>
+              <option value="LONG_TERM">Long terme</option>
+              <option value="FOMO">FOMO</option>
+              <option value="REVENGE">Revenge</option>
+            </select>
+            <select name="emotion">
+              <option value="CALM">Calme</option>
+              <option value="CONFIDENT">Confiant</option>
+              <option value="FOMO">FOMO</option>
+              <option value="FEAR">Peur</option>
+              <option value="IMPATIENT">Impatient</option>
+              <option value="STRESSED">Stressé</option>
+              <option value="GREED">Avidité</option>
+              <option value="REVENGE">Revanche</option>
+            </select>
+            <select name="result_status">
+              <option value="OPEN">Ouvert</option>
+              <option value="WIN">Win</option>
+              <option value="LOSS">Loss</option>
+              <option value="BREAKEVEN">Break-even</option>
+              <option value="CANCELLED">Annulé</option>
             </select>
             <input name="confidence" type="number" min="0" max="100" placeholder="Confiance">
-            <input name="emotion" placeholder="Émotion">
+            <input name="pnl_percent" type="number" step="0.01" placeholder="PnL %">
+            <input name="pnl_usdc" type="number" step="0.01" placeholder="PnL USDC">
             <input name="reason" placeholder="Raison">
-            <input name="result" placeholder="Résultat">
+            <input name="notes" placeholder="Notes">
             <button type="submit">Ajouter</button>
           </form>
+          <div id="journalStats" class="journal-stats"></div>
+          <div id="journalFilters" class="journal-filters">
+            <input id="journalFilterSymbol" placeholder="Filtrer symbole">
+            <select id="journalFilterResult">
+              <option value="">Tous résultats</option>
+              <option value="OPEN">Ouverts</option>
+              <option value="WIN">Wins</option>
+              <option value="LOSS">Loss</option>
+              <option value="BREAKEVEN">Break-even</option>
+              <option value="CANCELLED">Annulés</option>
+            </select>
+            <select id="journalFilterEmotion">
+              <option value="">Toutes émotions</option>
+              <option value="CALM">Calme</option>
+              <option value="CONFIDENT">Confiant</option>
+              <option value="FOMO">FOMO</option>
+              <option value="FEAR">Peur</option>
+              <option value="IMPATIENT">Impatient</option>
+              <option value="STRESSED">Stressé</option>
+              <option value="GREED">Avidité</option>
+              <option value="REVENGE">Revanche</option>
+            </select>
+          </div>
           <div id="journalList" class="list-stack"></div>
         </div>
       </section>

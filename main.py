@@ -25,6 +25,7 @@ from services.binance_sync import (
 from services.btc_correlation import calculate_relative_strength
 from services.decision_engine import build_decision, build_decision_v5, build_decisions
 from services.history import get_symbol_history, init_db, reset_database
+from services.journal_analytics import compute_journal_analytics, compute_winrate
 from services.market_universe import get_market_universe
 from services.market_cache import get_market_payload_cache, save_market_payload
 from services.opportunity_scanner import (
@@ -45,6 +46,7 @@ from services.personal_data import (
     list_watch_candidates,
     repair_market_sources,
     update_position,
+    update_journal_entry,
     update_watch_candidate,
 )
 from services.score_history import get_score_evolution, save_score_snapshot
@@ -184,56 +186,99 @@ def _should_skip_market_analysis(entry: dict) -> bool:
     )
 
 
+def _confidence_from_score(score: int | float | None, *, default: int = 50) -> int:
+    if score is None:
+        return default
+    return max(30, min(75, int(score)))
+
+
+def build_alpha_market_row(entry: dict) -> dict:
+    position_info = entry.get("position_info") or {}
+    watch_info = entry.get("watch_info") or {}
+    source_info = position_info if position_info.get("market_source") else watch_info
+    current_price = position_info.get("current_price") or watch_info.get("current_price")
+    score = source_info.get("global_score")
+    trend = source_info.get("global_trend") or "NEUTRAL"
+    message = source_info.get("market_error") or "Analyse Alpha partielle"
+    confidence = _confidence_from_score(score)
+    logger.info(
+        "[MARKET] Alpha row %s price=%s score=%s trend=%s",
+        entry.get("symbol"),
+        current_price,
+        score,
+        trend,
+    )
+    return {
+        **entry,
+        "symbol": entry["symbol"],
+        "analysis_available": current_price is not None,
+        "limited_analysis": True,
+        "is_valid_symbol": True,
+        "current_price": current_price,
+        "global_score": score,
+        "global_signal": "SURVEILLANCE",
+        "global_trend": trend,
+        "trend": trend,
+        "setup_quality": source_info.get("setup_quality") or "LIMITED",
+        "price_change_pct": source_info.get("price_change_pct"),
+        "quote_volume": source_info.get("quote_volume"),
+        "market_cap": source_info.get("market_cap"),
+        "alpha_ma7": source_info.get("alpha_ma7"),
+        "alpha_ma25": source_info.get("alpha_ma25"),
+        "alpha_ma99": source_info.get("alpha_ma99"),
+        "alpha_momentum_pct": source_info.get("alpha_momentum_pct"),
+        "candles_available": source_info.get("candles_available", False),
+        "decision_engine": {
+            "decision": "WAIT",
+            "decision_label": "Surveillance Alpha",
+            "confidence": confidence,
+            "trigger_label": "Alpha",
+            "blocking_factors": [message],
+            "positive_factors": ["Prix Alpha disponible"] if current_price is not None else [],
+            "reason_summary": message,
+        },
+        "decision": "WAIT",
+        "confidence": confidence,
+        "trigger": "Alpha",
+        "blocking_factor": message,
+    }
+
+
+def build_spot_market_row(entry: dict, analysis: dict, decision: dict) -> dict:
+    logger.debug(
+        "[MARKET] Spot row %s price=%s score=%s decision=%s",
+        entry.get("symbol"),
+        analysis.get("current_price"),
+        analysis.get("global_score"),
+        decision.get("decision"),
+    )
+    return {
+        **analysis,
+        **entry,
+        "decision_engine": decision,
+        "current_price": analysis.get("current_price"),
+        "decision": decision.get("decision"),
+        "confidence": decision.get("confidence"),
+        "trend": analysis.get("global_trend"),
+        "trigger": decision.get("trigger_label"),
+        "blocking_factor": (decision.get("blocking_factors") or ["-"])[0],
+    }
+
+
 def _analysis_unavailable_row(entry: dict) -> dict:
     position_info = entry.get("position_info") or {}
     watch_info = entry.get("watch_info") or {}
     market_source = position_info.get("market_source") or watch_info.get("market_source")
     source_info = position_info if position_info.get("market_source") else watch_info
-    message = source_info.get("market_error") or "Analyse indisponible"
+    current_price = position_info.get("current_price") or watch_info.get("current_price")
     if market_source == "BINANCE_ALPHA":
-        message = source_info.get("market_error") or "Analyse Alpha limitée"
-    elif position_info.get("is_valid_symbol") is False:
+        return build_alpha_market_row(entry)
+
+    message = source_info.get("market_error") or "Analyse indisponible"
+    if position_info.get("is_valid_symbol") is False:
         message = "Paire Binance introuvable"
     elif watch_info.get("market_error"):
         message = watch_info["market_error"]
-    current_price = position_info.get("current_price") or watch_info.get("current_price")
-    if market_source == "BINANCE_ALPHA" and current_price is not None:
-        trend = source_info.get("global_trend") or "NEUTRAL"
-        score = source_info.get("global_score")
-        return {
-            **entry,
-            "symbol": entry["symbol"],
-            "analysis_available": False,
-            "limited_analysis": True,
-            "is_valid_symbol": True,
-            "current_price": current_price,
-            "global_score": score,
-            "global_signal": "SURVEILLANCE",
-            "global_trend": trend,
-            "trend": trend,
-            "setup_quality": source_info.get("setup_quality") or "LIMITED",
-            "price_change_pct": source_info.get("price_change_pct"),
-            "quote_volume": source_info.get("quote_volume"),
-            "market_cap": source_info.get("market_cap"),
-            "alpha_ma7": source_info.get("alpha_ma7"),
-            "alpha_ma25": source_info.get("alpha_ma25"),
-            "alpha_ma99": source_info.get("alpha_ma99"),
-            "alpha_momentum_pct": source_info.get("alpha_momentum_pct"),
-            "candles_available": source_info.get("candles_available", False),
-            "decision_engine": {
-                "decision": "WAIT",
-                "decision_label": "Surveillance Alpha",
-                "confidence": 50 if score is None else max(30, min(70, int(score))),
-                "trigger_label": "Alpha",
-                "blocking_factors": [message],
-                "positive_factors": ["Prix Alpha disponible"],
-                "reason_summary": message,
-            },
-            "decision": "WAIT",
-            "confidence": 50 if score is None else max(30, min(70, int(score))),
-            "trigger": "Alpha",
-            "blocking_factor": message,
-        }
     return {
         **entry,
         "symbol": entry["symbol"],
@@ -317,19 +362,7 @@ def _build_market_payload() -> dict:
         )
         decisions_by_symbol[symbol] = decision
         save_score_snapshot(symbol, decision, global_score=analysis.get("global_score"))
-        rows.append(
-            {
-                **analysis,
-                **entry,
-                "decision_engine": decision,
-                "current_price": analysis.get("current_price"),
-                "decision": decision.get("decision"),
-                "confidence": decision.get("confidence"),
-                "trend": analysis.get("global_trend"),
-                "trigger": decision.get("trigger_label"),
-                "blocking_factor": (decision.get("blocking_factors") or ["-"])[0],
-            }
-        )
+        rows.append(build_spot_market_row(entry, analysis, decision))
 
     constructive_symbols = {
         candidate["symbol"]
@@ -571,14 +604,40 @@ def api_journal():
 
 @app.post("/api/journal")
 def api_create_journal_entry(payload: dict):
-    return create_journal_entry(payload)
+    try:
+        return create_journal_entry(payload)
+    except ValueError as exc:
+        return api_error(str(exc), status_code=400)
+
+
+@app.put("/api/journal/{entry_id}")
+def api_update_journal_entry(entry_id: int, payload: dict):
+    try:
+        entry = update_journal_entry(entry_id, payload)
+    except ValueError as exc:
+        return api_error(str(exc), status_code=400)
+    if not entry:
+        return api_error("Journal entry not found", status_code=404)
+    return entry
 
 
 @app.delete("/api/journal/{entry_id}")
 def api_delete_journal_entry(entry_id: int):
     if not delete_journal_entry(entry_id):
-        raise HTTPException(status_code=404, detail="Journal entry not found")
+        return api_error("Journal entry not found", status_code=404)
     return {"deleted": True}
+
+
+@app.get("/api/journal/stats")
+def api_journal_stats():
+    entries = list_journal()
+    return compute_winrate(entries)
+
+
+@app.get("/api/journal/analytics")
+def api_journal_analytics():
+    entries = list_journal()
+    return compute_journal_analytics(entries)
 
 
 @app.get("/api/alerts")

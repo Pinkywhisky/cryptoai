@@ -63,3 +63,26 @@ def test_alpha_alerts_flag_large_unrealized_loss():
     assert alerts[0]["type"] == "RISK"
     assert alerts[0]["severity"] == "HIGH"
     assert "Alpha" in alerts[0]["title"]
+
+
+def test_ai_alerts_detect_score_acceleration():
+    alerts = generate_ai_alerts(
+        [
+            {
+                "symbol": "XRPUSDC",
+                "history": [38, 53],
+                "global_score": 53,
+                "global_trend": "NEUTRAL",
+            }
+        ]
+    )
+
+    assert alerts[0]["type"] == "OPPORTUNITY"
+    assert alerts[0]["title"] == "Momentum en forte amélioration"
+
+
+def test_ai_alerts_return_market_insight_when_no_priority_alert():
+    alerts = generate_ai_alerts([{"symbol": "BTCUSDC", "global_score": 45, "global_trend": "NEUTRAL"}])
+
+    assert alerts
+    assert alerts[0]["type"] == "MARKET"

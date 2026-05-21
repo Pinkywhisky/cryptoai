@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,11 +46,49 @@ WATCH_FIELDS = [
 ]
 JOURNAL_FIELDS = [
     "symbol",
-    "action",
-    "reason",
-    "confidence",
+    "market_source",
+    "decision_type",
+    "trade_type",
     "emotion",
+    "confidence",
+    "reason",
+    "notes",
+    "result_status",
+    "pnl_percent",
+    "pnl_usdc",
+    "duration_minutes",
+    "ai_score",
+    "ai_trend",
+    "ai_setup_quality",
+    "ai_trigger",
+    "ai_market_regime",
+    "ai_market_score",
+    "ai_snapshot_json",
+    # Backward-compatible aliases accepted from the old form/API.
+    "action",
     "result",
+]
+JOURNAL_INSERT_FIELDS = [
+    "created_at",
+    "symbol",
+    "market_source",
+    "decision_type",
+    "trade_type",
+    "emotion",
+    "confidence",
+    "reason",
+    "notes",
+    "result_status",
+    "pnl_percent",
+    "pnl_usdc",
+    "duration_minutes",
+    "ai_score",
+    "ai_trend",
+    "ai_setup_quality",
+    "ai_trigger",
+    "ai_market_regime",
+    "ai_market_score",
+    "ai_snapshot_json",
 ]
 
 
@@ -645,35 +684,216 @@ def repair_market_sources(db_path: Path | str = DB_PATH) -> dict[str, Any]:
     return {"updated": updated, "symbols": sorted(set(symbols))}
 
 
+def _int_or_none(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_dumps(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _decode_journal_row(row: sqlite3.Row) -> dict[str, Any]:
+    item = _row_to_dict(row)
+    snapshot_json = item.get("ai_snapshot_json")
+    try:
+        item["ai_snapshot"] = json.loads(snapshot_json) if snapshot_json else None
+    except (TypeError, json.JSONDecodeError):
+        item["ai_snapshot"] = None
+    item["action"] = item.get("decision_type")
+    item["result"] = item.get("result_status")
+    item["pnl"] = item.get("pnl_percent")
+    return item
+
+
+def _legacy_journal_row(row: sqlite3.Row) -> dict[str, Any]:
+    item = _row_to_dict(row)
+    return {
+        **item,
+        "decision_type": item.get("action"),
+        "trade_type": None,
+        "result_status": item.get("result") or "OPEN",
+        "notes": None,
+        "pnl_percent": None,
+        "pnl_usdc": None,
+        "duration_minutes": None,
+        "ai_score": None,
+        "ai_trend": None,
+        "ai_setup_quality": None,
+        "ai_trigger": None,
+        "ai_market_regime": None,
+        "ai_market_score": None,
+        "ai_snapshot_json": None,
+        "ai_snapshot": None,
+    }
+
+
+def _build_journal_ai_snapshot(symbol: str) -> dict[str, Any]:
+    resolution = resolve_market_symbol(symbol)
+    market_source = resolution.get("market_source", MARKET_SOURCE_UNKNOWN)
+    snapshot: dict[str, Any] = {}
+    decision: dict[str, Any] = {}
+    regime: dict[str, Any] = {}
+
+    try:
+        snapshot = get_market_snapshot(resolution.get("symbol") or symbol)
+    except Exception as exc:
+        snapshot = {
+            "symbol": resolution.get("symbol") or symbol,
+            "analysis_available": False,
+            "market_source": market_source,
+            "market_error": str(exc),
+        }
+
+    if snapshot.get("analysis_available"):
+        try:
+            from services.decision_engine import build_decision
+
+            decision = build_decision(
+                symbol=snapshot.get("symbol") or symbol,
+                analysis=snapshot,
+                scan_results=[snapshot],
+                positions=[],
+            )
+        except Exception as exc:
+            decision = {"error": str(exc)}
+
+    try:
+        from services.market_regime import determine_market_regime
+
+        regime = determine_market_regime([snapshot]) if snapshot else {}
+    except Exception as exc:
+        regime = {"error": str(exc)}
+
+    return {
+        "resolution": resolution,
+        "market": snapshot,
+        "decision": decision,
+        "market_regime": regime,
+    }
+
+
+def _normalize_journal_payload(payload: dict[str, Any], *, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = _clean_payload(payload, JOURNAL_FIELDS)
+    existing = existing or {}
+    symbol = str(data.get("symbol") or existing.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise ValueError("Symbole obligatoire pour le journal.")
+
+    snapshot = None
+    if not existing or "symbol" in data or not existing.get("ai_snapshot_json"):
+        snapshot = _build_journal_ai_snapshot(symbol)
+    elif existing.get("ai_snapshot_json"):
+        try:
+            snapshot = json.loads(existing["ai_snapshot_json"])
+        except (TypeError, json.JSONDecodeError):
+            snapshot = None
+
+    market = (snapshot or {}).get("market", {})
+    decision = (snapshot or {}).get("decision", {})
+    regime = (snapshot or {}).get("market_regime", {})
+    resolution = (snapshot or {}).get("resolution", {})
+
+    decision_type = data.get("decision_type") or data.get("action") or (existing or {}).get("decision_type") or "WAIT"
+    result_status = data.get("result_status") or data.get("result") or (existing or {}).get("result_status") or "OPEN"
+    normalized = {
+        "symbol": symbol,
+        "market_source": data.get("market_source") or resolution.get("market_source") or (existing or {}).get("market_source"),
+        "decision_type": str(decision_type).upper(),
+        "trade_type": str(data.get("trade_type") or existing.get("trade_type") or "TEST").upper(),
+        "emotion": str(data.get("emotion") or existing.get("emotion") or "CALM").upper(),
+        "confidence": _int_or_none(data.get("confidence")) if "confidence" in data else existing.get("confidence") or decision.get("confidence"),
+        "reason": data.get("reason") if "reason" in data else existing.get("reason"),
+        "notes": data.get("notes") if "notes" in data else existing.get("notes"),
+        "result_status": str(result_status).upper(),
+        "pnl_percent": _float_or_none(data.get("pnl_percent")) if "pnl_percent" in data else existing.get("pnl_percent"),
+        "pnl_usdc": _float_or_none(data.get("pnl_usdc")) if "pnl_usdc" in data else existing.get("pnl_usdc"),
+        "duration_minutes": _int_or_none(data.get("duration_minutes")) if "duration_minutes" in data else existing.get("duration_minutes"),
+        "ai_score": _int_or_none(market.get("global_score") or market.get("score") or existing.get("ai_score")),
+        "ai_trend": market.get("global_trend") or market.get("trend") or existing.get("ai_trend"),
+        "ai_setup_quality": market.get("setup_quality") or existing.get("ai_setup_quality"),
+        "ai_trigger": decision.get("trigger_label") or (market.get("triggers") or {}).get("label") or existing.get("ai_trigger"),
+        "ai_market_regime": regime.get("regime") or existing.get("ai_market_regime"),
+        "ai_market_score": _int_or_none(decision.get("market_score") or market.get("market_score") or existing.get("ai_market_score")),
+        "ai_snapshot_json": _json_dumps(snapshot or {}) if snapshot is not None else existing.get("ai_snapshot_json"),
+    }
+    return normalized
+
+
 def list_journal(db_path: Path | str = DB_PATH) -> list[dict[str, Any]]:
     with _connect(db_path) as connection:
-        rows = connection.execute("SELECT * FROM trade_journal ORDER BY id DESC").fetchall()
-    return [_row_to_dict(row) for row in rows]
+        rows = connection.execute("SELECT * FROM journal_entries ORDER BY id DESC").fetchall()
+        if rows:
+            return [_decode_journal_row(row) for row in rows]
+        legacy_rows = connection.execute("SELECT * FROM trade_journal ORDER BY id DESC").fetchall()
+    return [_legacy_journal_row(row) for row in legacy_rows]
 
 
 def create_journal_entry(payload: dict[str, Any], db_path: Path | str = DB_PATH) -> dict[str, Any]:
-    data = _clean_payload(payload, JOURNAL_FIELDS)
-    data["symbol"] = data["symbol"].upper()
+    data = _normalize_journal_payload(payload)
     data["created_at"] = _now()
 
-    fields = list(data.keys())
+    fields = [field for field in JOURNAL_INSERT_FIELDS if field in data]
     placeholders = ", ".join("?" for _ in fields)
     with _connect(db_path) as connection:
         cursor = connection.execute(
-            f"INSERT INTO trade_journal ({', '.join(fields)}) VALUES ({placeholders})",
+            f"INSERT INTO journal_entries ({', '.join(fields)}) VALUES ({placeholders})",
             [data[field] for field in fields],
         )
         connection.commit()
         row = connection.execute(
-            "SELECT * FROM trade_journal WHERE id = ?",
+            "SELECT * FROM journal_entries WHERE id = ?",
             (cursor.lastrowid,),
         ).fetchone()
-    return _row_to_dict(row)
+    return _decode_journal_row(row)
+
+
+def update_journal_entry(
+    entry_id: int,
+    payload: dict[str, Any],
+    db_path: Path | str = DB_PATH,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as connection:
+        existing_row = connection.execute(
+            "SELECT * FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        if not existing_row:
+            return None
+        existing = _row_to_dict(existing_row)
+        data = _normalize_journal_payload(payload, existing=existing)
+        fields = [field for field in JOURNAL_INSERT_FIELDS if field != "created_at" and field in data]
+        assignments = ", ".join(f"{field} = ?" for field in fields)
+        connection.execute(
+            f"UPDATE journal_entries SET {assignments} WHERE id = ?",
+            [data[field] for field in fields] + [entry_id],
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+    return _decode_journal_row(row)
 
 
 def delete_journal_entry(entry_id: int, db_path: Path | str = DB_PATH) -> bool:
     with _connect(db_path) as connection:
-        cursor = connection.execute("DELETE FROM trade_journal WHERE id = ?", (entry_id,))
+        cursor = connection.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
+        if cursor.rowcount == 0:
+            cursor = connection.execute("DELETE FROM trade_journal WHERE id = ?", (entry_id,))
         connection.commit()
     return cursor.rowcount > 0
 
