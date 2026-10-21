@@ -278,8 +278,63 @@ function decisionOf(item) {
   return item.decision_engine ?? {};
 }
 
-function mainBlockingFactor(item) {
+function triggerDecisionLabel(decision) {
+  const entryAllowed = decision?.decision === "BUY_READY" && decision?.timing_is_actionable === true;
+  const confirmedLabel = "Signal technique confirme";
+  if (decision?.timing_label) {
+    return decision.timing_status === "CONFIRMED" && !entryAllowed
+      ? `${decision.timing_label} (entree non autorisee)`
+      : decision.timing_label;
+  }
+  const label = String(decision?.trigger_label ?? "").toLowerCase();
+  const score = Number(decision?.trigger_score);
+  if (label === "alpha") return "Analyse Alpha partielle";
+  if (Number.isFinite(score)) {
+    if (score >= 60) return entryAllowed ? confirmedLabel : `${confirmedLabel} (entree non autorisee)`;
+    if (score >= 30) return "Signal en formation";
+    return "Pas encore de signal d'entree";
+  }
+  if (label.includes("confirm")) return entryAllowed ? confirmedLabel : `${confirmedLabel} (entree non autorisee)`;
+  if (label.includes("partiel")) return "Signal en formation";
+  if (label.includes("absent")) return "Pas encore de signal d'entree";
+  return decision?.trigger_label ?? "-";
+}
+
+function decisionFactorLabel(factor) {
+  return {
+    "Trigger absent": "Attendre un signal d'entree",
+    "Volume insuffisant": "Volume pas assez convaincant",
+    "Trend global bearish": "Tendance encore fragile",
+    "Trend global VERY_BEARISH": "Tendance trop baissiere",
+    "Risk/reward mauvais": "Risque trop eleve",
+    "BTC trend defavorable": "BTC pese sur le contexte",
+    "Prix sous MA25 et MA99": "Prix sous les moyennes cles",
+    "Proche resistance": "Prix proche d'une resistance",
+    "Meche haute importante": "Rejet vendeur visible",
+    "Risk/reward favorable": "Risque/reward interessant",
+    "Volume en acceleration": "Volume en acceleration",
+    "Pression acheteuse": "Pression acheteuse",
+    "Breakout confirme": "Breakout confirme",
+    "Momentum 1h positif": "Momentum 1h positif",
+    "Consolidation propre": "Consolidation propre",
+  }[factor] ?? factor;
+}
+
+function decisionSummaryLabel(summary) {
+  return {
+    "Setup interessant, mais le trigger d'entree reste partiel.": "Zone interessante, mais le signal d'entree doit encore se confirmer.",
+    "Contexte, setup, trigger et risque sont coherents pour une surveillance active d'achat.": "Contexte, zone et timing sont alignes pour une surveillance active d'achat.",
+    "Contexte fragile et risque trop eleve pour chercher une entree.": "Contexte fragile : mieux vaut eviter de chercher une entree pour l'instant.",
+    "Signaux mixtes, attendre une confirmation plus nette.": "Signaux mixtes : attendre une confirmation plus nette.",
+  }[summary] ?? summary;
+}
+
+function rawMainBlockingFactor(item) {
   return decisionOf(item).blocking_factors?.[0] ?? "-";
+}
+
+function mainBlockingFactor(item) {
+  return decisionFactorLabel(rawMainBlockingFactor(item));
 }
 
 function shortText(value, maxLength = 42) {
@@ -339,7 +394,6 @@ function renderStatusBadges(item) {
     badges.push(renderMarketSourceBadge(watch.market_source));
   }
   if (item.opportunity_info) badges.push(`<span class="badge medium">Opportunité</span>`);
-  if ((item.sources ?? []).includes("WATCHLIST")) badges.push(`<span class="badge neutral">Watchlist</span>`);
   if (!badges.length) badges.push(renderMarketSourceBadge("UNKNOWN"));
 
   return [...new Set(badges)].join("");
@@ -560,6 +614,13 @@ async function enrichWithHistory(rows) {
   }));
 }
 
+function reconcileOpenDetail() {
+  if (!detailPanel.classList.contains("open")) return;
+  const item = latestRows.find((row) => row.symbol === detailTitle.textContent);
+  if (item) renderDetail(item);
+  else closeDetailPanel();
+}
+
 function renderRows(rows) {
   latestRows = [...rows];
   dashboardState.marketData = latestRows;
@@ -581,6 +642,7 @@ function renderRows(rows) {
         </article>
       `;
     }
+    reconcileOpenDetail();
     return;
   }
 
@@ -614,16 +676,17 @@ function renderRows(rows) {
         <td><strong>${decision.confidence ?? "-"}</strong><span style="font-size:11px; color:var(--muted)">/100</span></td>
         <td><span class="trend-badge ${trendClass(trend)}">${trend.replace('_', ' ')}</span></td>
         <td><span class="badge ${qualityClass(quality)}">${quality}</span></td>
-        <td>${decision.trigger_label ?? "-"}</td>
+        <td>${triggerDecisionLabel(decision)}</td>
         <td><strong>${item.global_score ?? "-"}</strong></td>
         <td>
-          <span class="summary" title="${mainBlockingFactor(item)}">${mainBlockingFactor(item)}</span>
+          <span class="summary" title="${rawMainBlockingFactor(item)}">${mainBlockingFactor(item)}</span>
           ${marketActionsHtml(item)}
         </td>
       </tr>
     `;
   }).join("");
   renderMobileCards(latestRows);
+  reconcileOpenDetail();
 }
 
 function sparklineSvg(values) {
@@ -684,7 +747,7 @@ async function renderScoreEvolution(symbol) {
 
 function factorChips(factors) {
   const items = factors?.length ? factors : ["-"];
-  return items.slice(0, 4).map((factor) => `<span>${shortText(factor, 36)}</span>`).join("");
+  return items.slice(0, 4).map((factor) => `<span>${shortText(decisionFactorLabel(factor), 36)}</span>`).join("");
 }
 
 function renderMobileCards(rows) {
@@ -726,7 +789,7 @@ function renderMobileCards(rows) {
           <div class="market-card-grid">
             <span>Prix</span><strong>${formatNumber(item.current_price, 6)}</strong>
             <span>Setup</span><strong><span class="badge ${qualityClass(setupQuality)}">${setupQuality}</span></strong>
-            <span>Trigger</span><strong>${decision.trigger_label ?? "-"}</strong>
+            <span>Timing technique</span><strong>${triggerDecisionLabel(decision)}</strong>
             <span>Blocage</span><strong>${shortText(blocking, 28)}</strong>
           </div>
         </button>
@@ -759,8 +822,11 @@ function renderMobileCards(rows) {
   }).join("");
 }
 
+let detailRenderId = 0;
+
 function renderDetail(item) {
   if (!item) return;
+  const renderId = ++detailRenderId;
   if (item.error) {
     detailTitle.textContent = item.symbol;
     detailSubtitle.textContent = "Analyse marche indisponible";
@@ -838,22 +904,26 @@ function renderDetail(item) {
         </div>
         <div class="kv-grid compact decision-kv">
           <span>Blocage principal :</span><strong title="${mainBlocker}">${shortText(mainBlocker, 34)}</strong>
+          <span>Timing technique :</span><strong>${triggerDecisionLabel(decision)}</strong>
+          <span>Entree autorisee :</span><strong>${decision.timing_is_actionable === true && decision.decision === "BUY_READY" ? "Oui" : "Non"}</strong>
+          <span>Action timing :</span><strong>${decision.timing_action ?? "-"}</strong>
           <span>Setup :</span><strong><span class="badge ${qualityClass(setupQuality)}">${setupQuality}</span></strong>
           <span>Signal actuel :</span><strong><span class="signal ${signalClass(signal)}">${signal}</span></strong>
         </div>
-        <p class="decision-summary">${decision.reason_summary ?? shortDecisionSummary(item)}</p>
+        <p class="decision-summary">${decisionSummaryLabel(decision.reason_summary) ?? shortDecisionSummary(item)}</p>
+        <p class="decision-summary muted-summary">${decision.timing_reason ?? ""}</p>
         <p class="decision-summary muted-summary">${marketContextText(item)}</p>
         <div class="factor-list inline-factors">
           <strong>Positifs</strong>
-          ${(decision.positive_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${factor}</span>`).join("")}
+          ${(decision.positive_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${decisionFactorLabel(factor)}</span>`).join("")}
         </div>
         <div class="factor-list inline-factors">
           <strong>Bloquants</strong>
-          ${(decision.blocking_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${factor}</span>`).join("")}
+          ${(decision.blocking_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${decisionFactorLabel(factor)}</span>`).join("")}
         </div>
         <div class="detail-actions">
           <button type="button" class="quick-journal" data-symbol="${item.symbol}">Note journal</button>
-          <button type="button" data-add-watch-symbol="${item.symbol}">Ajouter watchlist</button>
+          <button type="button" data-add-watch-symbol="${item.symbol}">Ajouter surveillance</button>
           <button type="button" data-add-position-symbol="${item.symbol}">Position manuelle</button>
           ${marketActionsHtml(item, true)}
         </div>
@@ -905,7 +975,11 @@ function renderDetail(item) {
   detailPanel.classList.add("open");
   if (currentDevice !== "desktop") document.body.classList.add("modal-open");
   renderScoreEvolution(item.symbol)
-    .then((html) => detailContent.insertAdjacentHTML("beforeend", html))
+    .then((html) => {
+      if (renderId === detailRenderId && detailPanel.classList.contains("open") && detailTitle.textContent === item.symbol) {
+        detailContent.insertAdjacentHTML("beforeend", html);
+      }
+    })
     .catch(() => {});
 }
 
@@ -1153,11 +1227,11 @@ function journalSnapshotHtml(entry) {
       <div><span>Score IA</span><strong>${formatNumber(entry.ai_score, 0)}</strong></div>
       <div><span>Trend</span><strong>${escapeHtml(entry.ai_trend || market.global_trend || "-")}</strong></div>
       <div><span>Setup</span><strong>${escapeHtml(entry.ai_setup_quality || market.setup_quality || "-")}</strong></div>
-      <div><span>Trigger</span><strong>${escapeHtml(entry.ai_trigger || decision.trigger_label || "-")}</strong></div>
+      <div><span>Timing</span><strong>${escapeHtml(entry.ai_trigger || triggerDecisionLabel(decision))}</strong></div>
       <div><span>Régime</span><strong>${escapeHtml(entry.ai_market_regime || regime.regime || "-")}</strong></div>
       <div><span>Prix</span><strong>${formatNumber(market.current_price, 6)}</strong></div>
     </div>
-    <p class="journal-replay">${escapeHtml(decision.reason_summary || market.market_error || "Snapshot IA sauvegardé au moment de l'entrée.")}</p>
+    <p class="journal-replay">${escapeHtml(decisionSummaryLabel(decision.reason_summary) || market.market_error || "Snapshot IA sauvegardé au moment de l'entrée.")}</p>
   `;
 }
 
@@ -1330,16 +1404,47 @@ async function refreshMarketCockpit() {
   await loadV5Data();
 }
 
-async function removeWatchFromMarket(candidateId) {
+function stripWatchCandidateFromRow(row, candidateId) {
+  if (String(row.watch_info?.id) !== String(candidateId)) return row;
+  const sources = (row.sources ?? []).filter((source) => source !== "WATCH_CANDIDATE");
+  const badges = (row.badges ?? []).filter((badge) => badge !== "Surveillance");
+  const updated = {
+    ...row,
+    sources,
+    badges,
+    watch_info: null,
+  };
+  const businessSources = ["POSITION", "WATCH_CANDIDATE", "OPPORTUNITY_SCANNER"];
+  const stillVisible = updated.position_info || updated.opportunity_info || sources.some((source) => businessSources.includes(source));
+  return stillVisible ? updated : null;
+}
+
+function removeWatchCandidateLocally(candidateId) {
+  latestWatchCandidates = latestWatchCandidates.filter((candidate) => String(candidate.id) !== String(candidateId));
+  renderWatchCandidates(latestWatchCandidates);
+
+  const nextRows = latestRows
+    .map((row) => stripWatchCandidateFromRow(row, candidateId))
+    .filter(Boolean);
+  renderRows(nextRows);
+}
+
+async function removeWatchFromMarket(candidateId, setFeedback = setMarketFeedback) {
   const confirmed = window.confirm("Retirer cette crypto de la surveillance ?");
   if (!confirmed) return;
-  setMarketFeedback("Retrait de la surveillance...", "loading");
+  setFeedback("Retrait de la surveillance...", "loading");
   try {
     await apiFetch(`/api/watch-candidates/${candidateId}`, { method: "DELETE" });
-    setMarketFeedback("Surveillance supprimée.", "success");
+  } catch (error) {
+    setFeedback(`Impossible de retirer la surveillance : ${error.message}`, "error");
+    return;
+  }
+  removeWatchCandidateLocally(candidateId);
+  setFeedback("Surveillance supprimee.", "success");
+  try {
     await refreshMarketCockpit();
   } catch (error) {
-    setMarketFeedback(`Impossible de retirer la surveillance : ${error.message}`, "error");
+    setFeedback(`Surveillance supprimee. Actualisation du cockpit impossible : ${error.message}`, "error");
   }
 }
 
@@ -1604,7 +1709,7 @@ binanceSyncButton.addEventListener("click", async () => {
 
 adminResetButton.addEventListener("click", async () => {
   const confirmed = window.confirm(
-    "Réinitialiser les données locales ? Le marché reviendra depuis la watchlist et Binance live."
+    "Réinitialiser les données locales ? Le marché reviendra depuis les surveillances, positions et propositions live."
   );
   if (!confirmed) return;
   adminResetButton.disabled = true;
@@ -1730,18 +1835,7 @@ watchBody.addEventListener("click", async (event) => {
     if (item) renderDetail(item);
   }
   if (deleteButton) {
-    const confirmed = window.confirm("Retirer cette crypto de la watchlist ?");
-    if (!confirmed) return;
-    setWatchFeedback("Retrait en cours...", "loading");
-    try {
-      await apiFetch(`/api/watch-candidates/${deleteButton.dataset.deleteWatch}`, { method: "DELETE" });
-      setWatchFeedback("Crypto retirée.", "success");
-      await loadPersonalData();
-      await loadMarket(false);
-      await loadV5Data();
-    } catch (error) {
-      setWatchFeedback(`Impossible de retirer la crypto : ${error.message}`, "error");
-    }
+    await removeWatchFromMarket(deleteButton.dataset.deleteWatch, setWatchFeedback);
   }
   if (journalButton) await createQuickJournal(journalButton.dataset.journalSymbol);
 });

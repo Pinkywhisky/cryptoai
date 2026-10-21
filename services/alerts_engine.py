@@ -95,7 +95,7 @@ def build_watch_alerts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     alerts = []
     for row in rows:
         decision = row.get("decision_engine") or {}
-        if not row.get("watch_info") and "WATCHLIST" not in row.get("sources", []):
+        if not row.get("watch_info"):
             continue
         if decision.get("decision") != "WAIT":
             continue
@@ -111,7 +111,7 @@ def build_watch_alerts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 title="Setup en construction",
                 message=decision.get("reason_summary") or "Surveillance utile, mais trigger encore incomplet.",
                 confidence=decision.get("confidence") or 45,
-                source="WATCHLIST",
+                source="WATCH_CANDIDATE",
             )
         )
     return alerts

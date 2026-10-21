@@ -44,7 +44,7 @@ def test_home_route() -> None:
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "Crypto AI Assistant V5" in response.text
+    assert "Crypto AI Assistant v1.0.0" in response.text
 
 
 def test_api_watchlist_route() -> None:
@@ -97,6 +97,8 @@ def test_analyze_multi_route_with_mocked_binance_client(monkeypatch) -> None:
 
 
 def test_api_scan_route_with_mocked_binance_client(monkeypatch) -> None:
+    monkeypatch.setattr(scanner, "WATCHLIST", ["BTCUSDC", "MORPHOUSDC"])
+
     def fake_get_klines(symbol: str, interval: str, limit: int) -> pd.DataFrame:
         if symbol == "MORPHOUSDC":
             raise RuntimeError("symbol not found")
@@ -164,6 +166,11 @@ def test_api_market_unifies_positions_watch_candidates_and_opportunities(monkeyp
             "global_trend": "NEUTRAL",
             "trend_strength": {"trend": "NEUTRAL", "score": 50},
             "current_price": 100,
+            "context_score": 60,
+            "setup_score": 65,
+            "risk_score": 60,
+            "market_score": 50,
+            "trigger_score": 45,
             "setup_quality": "MOYEN",
             "risk_reward": {"ratio": 1.8, "quality": "MOYEN"},
             "distance_to_support_pct": 2,
@@ -176,7 +183,7 @@ def test_api_market_unifies_positions_watch_candidates_and_opportunities(monkeyp
             },
             "momentum": {"medium": {"direction": "NEUTRAL"}},
             "patterns": {},
-            "triggers": {"score": 35, "label": "A surveiller"},
+            "triggers": {"score": 45, "label": "A surveiller"},
         }
 
     def fake_scan_watchlist_multi(watchlist, limit=120, save_history=True):
@@ -187,7 +194,7 @@ def test_api_market_unifies_positions_watch_candidates_and_opportunities(monkeyp
 
     monkeypatch.setattr(app_module, "list_positions", lambda: positions)
     monkeypatch.setattr(app_module, "list_watch_candidates", lambda: watch_candidates)
-    monkeypatch.setattr(app_module, "get_market_candidates", lambda top_n=30: opportunities)
+    monkeypatch.setattr(app_module, "get_market_candidates", lambda top_n=10: opportunities[:top_n])
     monkeypatch.setattr(app_module.scanner, "WATCHLIST", ["BTCUSDC", "ETHUSDC"])
     monkeypatch.setattr(app_module.scanner, "scan_watchlist_multi", fake_scan_watchlist_multi)
     monkeypatch.setattr(app_module, "save_score_snapshot", lambda *args, **kwargs: None)
@@ -200,14 +207,15 @@ def test_api_market_unifies_positions_watch_candidates_and_opportunities(monkeyp
     assert symbols.count("BTCUSDC") == 1
     assert "XRPUSDC" in symbols
     assert "SUIUSDC" in symbols
-    assert "ETHUSDC" in symbols
+    assert "ETHUSDC" not in symbols
     assert "DOGEUSDC" not in symbols
     assert payload["counts"]["positions"] == 1
     assert payload["counts"]["watch_candidates"] == 1
     assert payload["counts"]["opportunities"] == 1
 
     btc = next(item for item in payload["results"] if item["symbol"] == "BTCUSDC")
-    assert btc["badges"] == ["Détenue", "Watchlist", "Spot"]
+    assert "Watchlist" not in btc["badges"]
+    assert "Spot" in btc["badges"]
     assert btc["position_info"]["unrealized_pnl_pct"] == 1.2
     assert btc["decision_engine"]["decision"] in {"WAIT", "SELL_WATCH", "BUY_WATCH"}
 
@@ -218,6 +226,62 @@ def test_api_market_unifies_positions_watch_candidates_and_opportunities(monkeyp
     sui = next(item for item in payload["results"] if item["symbol"] == "SUIUSDC")
     assert sui["opportunity_info"]["scan_score"] == 82
     assert "Opportunité" in sui["badges"]
+
+
+def test_api_market_prioritizes_surveillance_symbols_before_ten_opportunities(monkeypatch, mocked_btc_analysis) -> None:
+    opportunities = [
+        {"symbol": f"AUTO{index:02d}USDC", "scan_score": 80 - index, "reason": "Auto candidate"}
+        for index in range(30)
+    ]
+    watch_candidates = [
+        {"id": 1, "symbol": "ADAUSDC", "priority": "MEDIUM"},
+        {"id": 2, "symbol": "MORPHOUSDC", "priority": "LOW"},
+    ]
+    scanned_symbols = []
+
+    def fake_analysis(symbol: str) -> dict:
+        return {
+            "symbol": symbol,
+            "global_score": 55,
+            "global_signal": "ATTENDRE",
+            "global_trend": "NEUTRAL",
+            "trend_strength": {"trend": "NEUTRAL", "score": 50},
+            "current_price": 100,
+            "setup_quality": "MOYEN",
+            "risk_reward": {"ratio": 1.8, "quality": "MOYEN"},
+            "distance_to_support_pct": 2,
+            "distance_to_resistance_pct": 5,
+            "timeframes": {},
+            "momentum": {"medium": {"direction": "NEUTRAL"}},
+            "patterns": {},
+            "triggers": {"score": 35, "label": "A surveiller"},
+        }
+
+    def fake_scan_watchlist_multi(watchlist, limit=120, save_history=True):
+        scanned_symbols.extend(watchlist)
+        assert limit == 120
+        assert save_history is True
+        return [fake_analysis(symbol) for symbol in watchlist]
+
+    monkeypatch.setattr(app_module, "list_positions", lambda: [])
+    monkeypatch.setattr(app_module, "list_watch_candidates", lambda: watch_candidates)
+    monkeypatch.setattr(app_module, "get_market_candidates", lambda top_n=10: opportunities[:top_n])
+    monkeypatch.setattr(app_module.scanner, "WATCHLIST", ["BTCUSDC", "ETHUSDC"])
+    monkeypatch.setattr(app_module.scanner, "scan_watchlist_multi", fake_scan_watchlist_multi)
+    monkeypatch.setattr(app_module, "save_score_snapshot", lambda *args, **kwargs: None)
+
+    response = client.get("/api/market?force=true")
+
+    assert response.status_code == 200
+    assert scanned_symbols[:2] == ["ADAUSDC", "MORPHOUSDC"]
+    assert len(scanned_symbols) == 12
+    assert "BTCUSDC" not in scanned_symbols
+    assert "ETHUSDC" not in scanned_symbols
+    rows_by_symbol = {item["symbol"]: item for item in response.json()["results"]}
+    assert "error" not in rows_by_symbol["ADAUSDC"]
+    assert "error" not in rows_by_symbol["MORPHOUSDC"]
+    assert rows_by_symbol["ADAUSDC"]["global_score"] == 55
+    assert rows_by_symbol["MORPHOUSDC"]["global_score"] == 55
 
 
 def test_api_market_keeps_manual_invalid_position_visible(monkeypatch) -> None:
@@ -301,7 +365,7 @@ def test_api_market_keeps_alpha_watch_candidate_without_spot_scan(monkeypatch) -
 
 def test_build_spot_market_row_keeps_decision_and_price() -> None:
     row = app_module.build_spot_market_row(
-        {"symbol": "MORPHOUSDC", "sources": ["WATCHLIST"], "badges": ["Watchlist", "Spot"]},
+        {"symbol": "MORPHOUSDC", "sources": ["WATCH_CANDIDATE"], "badges": ["Surveillance", "Spot"]},
         {
             "symbol": "MORPHOUSDC",
             "current_price": 1.23,
@@ -343,10 +407,12 @@ def test_build_alpha_market_row_uses_partial_analysis_without_unknown() -> None:
     assert row["trend"] == "BEARISH"
     assert row["blocking_factor"] == "Analyse Alpha partielle"
     assert row["decision_engine"]["decision_label"] == "Surveillance Alpha"
+    assert row["decision_engine"]["timing_status"] == "LIMITED"
+    assert row["decision_engine"]["timing_label"] == "Analyse Alpha partielle"
     assert row["trend"] != "UNKNOWN"
 
 
-def test_api_market_filters_unqualified_automatic_opportunity(monkeypatch, mocked_btc_analysis) -> None:
+def test_api_market_filters_analyzed_automatic_opportunity_when_not_buy_candidate(monkeypatch, mocked_btc_analysis) -> None:
     bad_opportunity = [{"symbol": "BADUSDC", "scan_score": 95, "reason": "Volume fort"}]
 
     def fake_scan_watchlist_multi(watchlist, limit=120, save_history=True):
@@ -373,10 +439,27 @@ def test_api_market_filters_unqualified_automatic_opportunity(monkeypatch, mocke
 
     monkeypatch.setattr(app_module, "list_positions", lambda: [])
     monkeypatch.setattr(app_module, "list_watch_candidates", lambda: [])
-    monkeypatch.setattr(app_module, "get_market_candidates", lambda top_n=30: bad_opportunity)
+    monkeypatch.setattr(app_module, "get_market_candidates", lambda top_n=10: bad_opportunity[:top_n])
     monkeypatch.setattr(app_module.scanner, "WATCHLIST", [])
     monkeypatch.setattr(app_module.scanner, "scan_watchlist_multi", fake_scan_watchlist_multi)
     monkeypatch.setattr(app_module, "save_score_snapshot", lambda *args, **kwargs: None)
+
+    response = client.get("/api/market?force=true")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["counts"]["opportunities"] == 0
+    assert payload["results"] == []
+
+
+def test_api_market_filters_unanalyzed_automatic_opportunity(monkeypatch) -> None:
+    opportunities = [{"symbol": "ZECUSDC", "scan_score": 34, "reason": "Volume 24h solide"}]
+
+    monkeypatch.setattr(app_module, "list_positions", lambda: [])
+    monkeypatch.setattr(app_module, "list_watch_candidates", lambda: [])
+    monkeypatch.setattr(app_module, "get_market_candidates", lambda top_n=10: opportunities[:top_n])
+    monkeypatch.setattr(app_module.scanner, "WATCHLIST", [])
+    monkeypatch.setattr(app_module.scanner, "scan_watchlist_multi", lambda *args, **kwargs: [])
 
     response = client.get("/api/market?force=true")
 
@@ -387,9 +470,9 @@ def test_api_market_filters_unqualified_automatic_opportunity(monkeypatch, mocke
 
 def test_api_market_returns_persistent_cache_without_scan(monkeypatch) -> None:
     cached_payload = {
-        "results": [{"symbol": "BTCUSDC", "badges": ["Watchlist"], "sources": ["WATCHLIST"]}],
-        "universe": [{"symbol": "BTCUSDC", "badges": ["Watchlist"], "sources": ["WATCHLIST"]}],
-        "counts": {"positions": 0, "watch_candidates": 0, "opportunities": 0, "total": 1},
+        "results": [{"symbol": "BTCUSDC", "badges": ["Surveillance"], "sources": ["WATCH_CANDIDATE"]}],
+        "universe": [{"symbol": "BTCUSDC", "badges": ["Surveillance"], "sources": ["WATCH_CANDIDATE"]}],
+        "counts": {"positions": 0, "watch_candidates": 1, "opportunities": 0, "total": 1},
         "updated_at": "2026-05-19T00:00:00+00:00",
         "source": "cache",
         "is_stale": False,
@@ -454,11 +537,14 @@ def test_dashboard_has_tooltips() -> None:
     assert 'id="journalModal"' in response.text
     assert 'id="symbolInput"' not in response.text
     assert 'id="quickWatchForm"' in response.text
+    assert "/static/app.js?v=1.0.0" in response.text
+    assert "/static/style.css?v=1.0.0" in response.text
     assert "Surveiller une crypto" in response.text
     assert 'id="portfolioSummary"' in response.text
     assert "Actualiser" in response.text
     assert "Gestion" in response.text
     assert "Trend global" in response.text
+    assert "Etat du timing d'entree" in response.text
     assert 'aria-haspopup="true"' in response.text
     assert "Paramètres API" not in response.text
 
@@ -480,11 +566,13 @@ def test_api_top_momentum_route_with_mocked_binance_client(monkeypatch) -> None:
         return _market_df(symbol)
 
     monkeypatch.setattr(scanner, "get_klines", fake_get_klines)
+    monkeypatch.setattr(scanner, "WATCHLIST", [])
+    monkeypatch.setattr(app_module, "get_market_candidates", lambda **kwargs: [{"symbol": "BTCUSDC", "scan_score": 80}])
 
     response = client.get("/api/top-momentum")
 
     assert response.status_code == 200
-    assert len(response.json()) <= 5
+    assert [item["symbol"] for item in response.json()] == ["BTCUSDC"]
 
 
 def test_api_top_setups_route_with_mocked_binance_client(monkeypatch) -> None:
@@ -492,11 +580,13 @@ def test_api_top_setups_route_with_mocked_binance_client(monkeypatch) -> None:
         return _market_df(symbol)
 
     monkeypatch.setattr(scanner, "get_klines", fake_get_klines)
+    monkeypatch.setattr(scanner, "WATCHLIST", [])
+    monkeypatch.setattr(app_module, "get_market_candidates", lambda **kwargs: [{"symbol": "BTCUSDC", "scan_score": 80}])
 
     response = client.get("/api/top-setups")
 
     assert response.status_code == 200
-    assert len(response.json()) <= 5
+    assert [item["symbol"] for item in response.json()] == ["BTCUSDC"]
 
 
 def test_positions_api_routes(monkeypatch) -> None:
@@ -699,6 +789,8 @@ def test_dashboard_js_contains_badges_and_binance_sync() -> None:
     assert "Supprimer position" in content
     assert "Position manuelle supprimée" in content
     assert "refreshMarketCockpit" in content
+    assert "removeWatchCandidateLocally" in content
+    assert "stripWatchCandidateFromRow" in content
     assert "initDashboard" in content
     assert "setButtonLoading" in content
     assert "is-loading" in content
@@ -710,6 +802,11 @@ def test_dashboard_js_contains_badges_and_binance_sync() -> None:
     assert "closeActionMenus" in content
     assert "event.key === \"Escape\"" in content
     assert "trendClass" in content
+    assert "triggerDecisionLabel" in content
+    assert "Pas encore de signal d'entree" in content
+    assert "Signal en formation" in content
+    assert "Attendre un signal d'entree" in content
+    assert "Action timing" in content
     assert "global_trend" in content
     assert "Valeur portefeuille" in content
     assert "PnL latent" in content

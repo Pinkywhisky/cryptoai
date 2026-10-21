@@ -54,6 +54,10 @@ def test_api_decision_symbol(monkeypatch):
 
 
 def test_api_decisions(monkeypatch):
+    monkeypatch.setattr(app_module.scanner, "WATCHLIST", [])
+    monkeypatch.setattr(app_module, "get_market_candidates", lambda **kwargs: [
+        {"symbol": "BTCUSDC", "scan_score": 80}, {"symbol": "ETHUSDC", "scan_score": 70},
+    ])
     results = [_scan_item("BTCUSDC"), _scan_item("ETHUSDC", {"trigger_score": 45})]
     app_module.scanner.last_scan_results = results
     monkeypatch.setattr(

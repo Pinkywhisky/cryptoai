@@ -35,8 +35,8 @@ def test_market_universe_merges_sources_once_with_badges() -> None:
     assert symbols.count("BTCUSDC") == 1
 
     btc = next(item for item in universe if item["symbol"] == "BTCUSDC")
-    assert btc["badges"] == ["Détenue", "Surveillance", "Watchlist", "Spot"]
-    assert btc["sources"] == ["POSITION", "BINANCE_SPOT", "WATCH_CANDIDATE", "WATCHLIST"]
+    assert btc["badges"] == ["Détenue", "Surveillance", "Spot"]
+    assert btc["sources"] == ["POSITION", "BINANCE_SPOT", "WATCH_CANDIDATE"]
     assert btc["position_info"]["unrealized_pnl_pct"] == 2.4
     assert btc["position_info"]["id"] == 11
     assert btc["watch_info"]["id"] == 7
@@ -79,7 +79,7 @@ def test_market_universe_prioritizes_positions_then_high_watch_then_opportunitie
         opportunities=[{"symbol": "SUIUSDC", "scan_score": 80}],
     )
 
-    assert [item["symbol"] for item in universe] == ["SOLUSDC", "XRPUSDC", "ADAUSDC", "SUIUSDC", "ETHUSDC"]
+    assert [item["symbol"] for item in universe] == ["SOLUSDC", "XRPUSDC", "ADAUSDC", "SUIUSDC"]
     assert universe[0]["badges"] == ["Détenue", "Manuel"]
 
 

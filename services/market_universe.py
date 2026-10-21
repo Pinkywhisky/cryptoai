@@ -11,7 +11,7 @@ from services.binance_alpha import (
 from services.binance_sync import MIN_ACTIVE_POSITION_VALUE_USDC
 
 
-BADGE_PRIORITY = ["Détenue", "Surveillance", "Opportunité", "Watchlist", "Spot", "Alpha", "Manuel", "Inconnu"]
+BADGE_PRIORITY = ["Détenue", "Surveillance", "Opportunité", "Spot", "Alpha", "Manuel", "Inconnu"]
 SOURCE_PRIORITY = [
     "POSITION",
     MARKET_SOURCE_SPOT,
@@ -22,7 +22,6 @@ SOURCE_PRIORITY = [
     "MIXED",
     "WATCH_CANDIDATE",
     "OPPORTUNITY_SCANNER",
-    "WATCHLIST",
 ]
 
 
@@ -207,15 +206,6 @@ def merge_symbols_from_sources(
         _add_badge(item, "Spot")
         item["priority"] = min(item["priority"], 4)
         item["opportunity_info"] = _opportunity_info(opportunity)
-
-    for symbol in watchlist or []:
-        upper = symbol.upper()
-        item = merged.setdefault(upper, _entry(upper))
-        _add_source(item, "WATCHLIST")
-        _add_source(item, MARKET_SOURCE_SPOT)
-        _add_badge(item, "Watchlist")
-        _add_badge(item, "Spot")
-        item["priority"] = min(item["priority"], 5)
 
     return sorted(merged.values(), key=lambda item: (item["priority"], item["symbol"]))
 

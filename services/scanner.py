@@ -11,15 +11,7 @@ from services.trend_strength import trend_from_score
 from services.triggers import detect_trigger_score
 
 
-DEFAULT_WATCHLIST = [
-    "BTCUSDC",
-    "ETHUSDC",
-    "SOLUSDC",
-    "XRPUSDC",
-    "DOGEUSDC",
-    "ADAUSDC",
-    "MORPHOUSDC",
-]
+DEFAULT_WATCHLIST: list[str] = []
 WATCHLIST = DEFAULT_WATCHLIST.copy()
 TIMEFRAME_WEIGHTS = {
     "15m": 0.20,
@@ -30,14 +22,16 @@ TIMEFRAME_WEIGHTS = {
 SCAN_CACHE_TTL_SECONDS = 15 * 60
 last_scan_results: list[dict[str, Any]] | None = None
 last_scan_timestamp: datetime | None = None
+last_scan_key: tuple[tuple[str, ...], int] | None = None
 scan_in_progress = False
 
 
 def reset_scan_cache(reset_watchlist: bool = False) -> dict[str, Any]:
-    global last_scan_results, last_scan_timestamp, scan_in_progress
+    global last_scan_results, last_scan_timestamp, last_scan_key, scan_in_progress
 
     last_scan_results = None
     last_scan_timestamp = None
+    last_scan_key = None
     scan_in_progress = False
 
     if reset_watchlist:
@@ -189,7 +183,7 @@ def scan_watchlist(
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
-    for symbol in watchlist or WATCHLIST:
+    for symbol in (WATCHLIST if watchlist is None else watchlist):
         try:
             analysis_result = analyze_symbol(symbol=symbol, interval=interval, limit=limit)
             analysis = analysis_result["analysis"]
@@ -221,7 +215,7 @@ def scan_watchlist_multi(
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
-    for symbol in watchlist or WATCHLIST:
+    for symbol in (WATCHLIST if watchlist is None else watchlist):
         try:
             result = analyze_symbol_multi(symbol=symbol, limit=limit)
             results.append(result)
@@ -245,11 +239,14 @@ def get_cached_scan(
     force: bool = False,
     ttl_seconds: int = SCAN_CACHE_TTL_SECONDS,
 ) -> dict[str, Any]:
-    global last_scan_results, last_scan_timestamp, scan_in_progress
+    global last_scan_results, last_scan_timestamp, last_scan_key, scan_in_progress
 
+    symbols = WATCHLIST.copy() if watchlist is None else list(watchlist)
+    cache_key = (tuple(symbols), limit)
     now = datetime.now(UTC)
     cache_is_fresh = (
-        last_scan_results is not None
+        last_scan_key == cache_key
+        and last_scan_results is not None
         and last_scan_timestamp is not None
         and (now - last_scan_timestamp).total_seconds() < ttl_seconds
     )
@@ -258,11 +255,12 @@ def get_cached_scan(
         scan_in_progress = True
         try:
             last_scan_results = scan_watchlist_multi(
-                watchlist=watchlist,
+                watchlist=symbols,
                 limit=limit,
                 save_history=True,
             )
             last_scan_timestamp = now
+            last_scan_key = cache_key
         finally:
             scan_in_progress = False
 

@@ -51,6 +51,10 @@ def test_buy_ready_impossible_if_trigger_score_below_60():
 
     assert decision["decision"] != "BUY_READY"
     assert "Trigger absent" in decision["blocking_factors"]
+    assert decision["timing_status"] == "FORMING"
+    assert decision["timing_label"] == "Signal en formation"
+    assert decision["timing_action"] == "Attendre une confirmation"
+    assert decision["timing_is_actionable"] is False
 
 
 def test_buy_ready_possible_when_context_setup_trigger_risk_are_ok():
@@ -58,6 +62,9 @@ def test_buy_ready_possible_when_context_setup_trigger_risk_are_ok():
 
     assert decision["decision"] == "BUY_READY"
     assert decision["decision_label"] == "Achat potentiel"
+    assert decision["timing_status"] == "CONFIRMED"
+    assert decision["timing_label"] == "Signal technique confirme"
+    assert decision["timing_is_actionable"] is True
 
 
 def test_buy_watch_when_setup_good_but_trigger_is_partial():
@@ -68,6 +75,22 @@ def test_buy_watch_when_setup_good_but_trigger_is_partial():
     )
 
     assert decision["decision"] == "BUY_WATCH"
+    assert decision["timing_status"] == "FORMING"
+    assert decision["timing_label"] == "Signal en formation"
+
+
+def test_timing_not_ready_has_explicit_action_label():
+    decision = build_decision(
+        "ETHUSDC",
+        _analysis(trigger_score=10),
+        market_context=_market(),
+    )
+
+    assert decision["trigger_label"] == "Absent"
+    assert decision["timing_status"] == "NOT_READY"
+    assert decision["timing_label"] == "Pas encore de signal d'entree"
+    assert decision["timing_action"] == "Attendre"
+    assert "timing_reason" in decision
 
 
 def test_avoid_when_trend_is_very_bearish():

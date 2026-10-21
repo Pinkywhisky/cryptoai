@@ -20,7 +20,8 @@ STABLE_BASES = {
 }
 EXCLUDED_SUFFIXES = ("UPUSDC", "DOWNUSDC", "BULLUSDC", "BEARUSDC")
 EXOTIC_MARKERS = ("3L", "3S", "5L", "5S")
-ALLOWED_OPPORTUNITY_DECISIONS = {"BUY_READY", "BUY_WATCH", "WAIT"}
+BUY_OPPORTUNITY_DECISIONS = {"BUY_READY", "BUY_WATCH"}
+ALLOWED_OPPORTUNITY_DECISIONS = BUY_OPPORTUNITY_DECISIONS
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -163,6 +164,8 @@ def is_constructive_opportunity(
     decision: dict[str, Any] | None = None,
 ) -> bool:
     """True when a scanner candidate deserves attention after full analysis."""
+    if not analysis or "error" in analysis or not decision:
+        return False
     decision_code = (decision or {}).get("decision", "WAIT")
     if decision_code not in ALLOWED_OPPORTUNITY_DECISIONS:
         return False
@@ -189,7 +192,7 @@ def opportunity_rank(
     decision: dict[str, Any] | None = None,
 ) -> tuple[int, int, int, str]:
     decision_code = (decision or {}).get("decision")
-    decision_rank = {"BUY_READY": 0, "BUY_WATCH": 1, "WAIT": 2}.get(decision_code, 9)
+    decision_rank = {"BUY_READY": 0, "BUY_WATCH": 1}.get(decision_code, 9)
     trigger_score = int((decision or {}).get("trigger_score") or 0)
     scan_score = int(candidate.get("scan_score") or 0)
     return (decision_rank, -trigger_score, -scan_score, str(candidate.get("symbol", "")))

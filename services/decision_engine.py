@@ -272,6 +272,48 @@ def _summary(decision: str, blocking: list[str], positives: list[str]) -> str:
     return "Signaux mixtes, attendre une confirmation plus nette."
 
 
+def _timing_context(trigger_score: int, decision: str) -> dict[str, Any]:
+    technical_signal = trigger_score >= 60
+    actionable = technical_signal and decision == "BUY_READY"
+    if technical_signal:
+        timing = {
+            "timing_status": "CONFIRMED",
+            "timing_label": "Signal technique confirme",
+            "timing_action": "Surveiller une entree possible" if actionable else "Attendre une decision d'achat",
+            "timing_reason": (
+                "Le signal technique et la decision BUY_READY sont alignes."
+                if actionable else
+                "Le signal technique est confirme, mais la decision actuelle n'autorise pas d'entree."
+            ),
+        }
+    elif trigger_score >= 30:
+        timing = {
+            "timing_status": "FORMING",
+            "timing_label": "Signal en formation",
+            "timing_action": "Attendre une confirmation",
+            "timing_reason": "Des premiers elements apparaissent, mais le signal d'entree n'est pas encore assez fort.",
+        }
+    else:
+        timing = {
+            "timing_status": "NOT_READY",
+            "timing_label": "Pas encore de signal d'entree",
+            "timing_action": "Attendre",
+            "timing_reason": "La zone peut etre interessante, mais le timing n'est pas valide pour une entree.",
+        }
+    if decision in {"AVOID", "CUT_LOSS", "SELL_WATCH", "TAKE_PROFIT"}:
+        timing["timing_action"] = "Ne pas chercher d'entree" if decision == "AVOID" else "Suivre la decision de gestion"
+        timing["timing_reason"] = "La decision de risque ou de gestion prime sur le signal technique ; aucune entree n'est autorisee."
+    return {
+        **timing,
+        "timing_is_technical_signal": technical_signal,
+        "timing_is_actionable": actionable,
+    }
+
+
+def _trigger_label(trigger_score: int) -> str:
+    return "Confirme" if trigger_score >= 60 else "Partiel" if trigger_score >= 30 else "Absent"
+
+
 def build_decision(
     symbol: str,
     analysis: dict[str, Any],
@@ -362,7 +404,8 @@ def build_decision(
         analysis,
     )
 
-    trigger_label = "Confirme" if trigger_score >= 60 else "Partiel" if trigger_score >= 30 else "Absent"
+    trigger_label = _trigger_label(trigger_score)
+    timing = _timing_context(trigger_score, decision)
     return {
         "symbol": symbol,
         "decision": decision,
@@ -373,6 +416,7 @@ def build_decision(
         "setup_score": setup_score,
         "trigger_score": trigger_score,
         "trigger_label": trigger_label,
+        **timing,
         "risk_score": risk_score,
         "market_score": market_score,
         "market_context": market_context,
@@ -431,6 +475,7 @@ def build_decision_v5(
 
     if advanced_triggers and advanced_triggers.get("detected"):
         decision["trigger_score"] = _clamp(decision["trigger_score"] + min(18, advanced_triggers.get("score", 0) * 0.25))
+        decision["trigger_label"] = _trigger_label(decision["trigger_score"])
         if "Trigger avance" not in decision["positive_factors"]:
             decision["positive_factors"].append("Trigger avance")
 
@@ -451,6 +496,7 @@ def build_decision_v5(
         decision["decision_label"] = DECISION_LABELS["BUY_WATCH"]
         decision["blocking_factors"].append("BTC VERY_BEARISH")
 
+    decision.update(_timing_context(decision["trigger_score"], decision["decision"]))
     decision["v5"] = {
         "market_regime": regime,
         "score_acceleration": score_acceleration,

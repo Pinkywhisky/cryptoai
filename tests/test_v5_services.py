@@ -61,9 +61,10 @@ def test_opportunity_filter_rejects_avoid_and_destroyed_setups():
     assert not is_constructive_opportunity(candidate, analysis={"global_trend": "NEUTRAL"}, decision=weak_setup)
 
 
-def test_opportunity_filter_keeps_constructive_wait_and_prioritizes_buy_ready():
+def test_opportunity_filter_keeps_only_buy_candidates_and_prioritizes_buy_ready():
     candidates = [
         {"symbol": "WAITUSDC", "scan_score": 95},
+        {"symbol": "WATCHUSDC", "scan_score": 85},
         {"symbol": "READYUSDC", "scan_score": 70},
     ]
     decisions = {
@@ -75,6 +76,15 @@ def test_opportunity_filter_keeps_constructive_wait_and_prioritizes_buy_ready():
             "market_score": 45,
             "confidence": 42,
             "trigger_score": 35,
+        },
+        "WATCHUSDC": {
+            "decision": "BUY_WATCH",
+            "context_score": 60,
+            "setup_score": 65,
+            "risk_score": 60,
+            "market_score": 55,
+            "confidence": 58,
+            "trigger_score": 45,
         },
         "READYUSDC": {
             "decision": "BUY_READY",
@@ -89,11 +99,15 @@ def test_opportunity_filter_keeps_constructive_wait_and_prioritizes_buy_ready():
 
     filtered = filter_constructive_opportunities(
         candidates,
-        analyses_by_symbol={"WAITUSDC": {"global_trend": "NEUTRAL"}, "READYUSDC": {"global_trend": "BULLISH"}},
+        analyses_by_symbol={
+            "WAITUSDC": {"global_trend": "NEUTRAL"},
+            "WATCHUSDC": {"global_trend": "NEUTRAL"},
+            "READYUSDC": {"global_trend": "BULLISH"},
+        },
         decisions_by_symbol=decisions,
     )
 
-    assert [item["symbol"] for item in filtered] == ["READYUSDC", "WAITUSDC"]
+    assert [item["symbol"] for item in filtered] == ["READYUSDC", "WATCHUSDC"]
 
 
 def test_advanced_triggers_detect_fake_breakout_and_momentum():

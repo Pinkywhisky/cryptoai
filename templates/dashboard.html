@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
   </head>
   <body>
     <main class="shell">
       <header class="mobile-topbar" aria-label="Navigation mobile">
         <div>
-          <strong>Crypto AI V5</strong>
+          <strong>Crypto AI v{{ app_version }}</strong>
           <span id="mobileStatusText">Pret</span>
         </div>
         <div class="mobile-top-actions">
@@ -24,7 +24,7 @@
         <div class="mobile-menu-header">
           <div>
             <strong>Menu</strong>
-            <span>Crypto AI Assistant V5</span>
+            <span>Crypto AI Assistant v{{ app_version }}</span>
           </div>
           <button id="mobileMenuClose" type="button" aria-label="Fermer le menu">X</button>
         </div>
@@ -37,7 +37,7 @@
       </nav>
       <header class="topbar">
         <div>
-          <h1>Crypto AI Assistant V5</h1>
+          <h1>Crypto AI Assistant v{{ app_version }}</h1>
           <p>Aide à la décision personnelle, sans trading automatique</p>
         </div>
         <nav class="top-actions primary-nav" aria-label="Navigation principale">
@@ -122,7 +122,7 @@
                 <th data-tooltip="Coherence des signaux entre eux, et non probabilite de gain.">Confiance</th>
                 <th data-tooltip="Tendance globale basée sur moyennes mobiles, pente, prix et momentum multi-timeframe.">Trend global</th>
                 <th data-tooltip="Qualité globale du point d’entrée selon le risk/reward, la tendance et les niveaux clés.">Setup quality</th>
-                <th data-tooltip="Etat du trigger d'entree : absent, partiel ou confirme.">Trigger</th>
+                <th data-tooltip="Etat du timing d'entree technique ; la decision et le risque conditionnent toute entree.">Timing technique</th>
                 <th data-tooltip="Score sur 100 basé sur tendance, momentum, volume, risk/reward et patterns.">Score global</th>
                 <th data-tooltip="Premier facteur qui bloque ou degrade la decision.">Blocage</th>
               </tr>
@@ -350,7 +350,7 @@
       </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v={{ app_version }}"></script>
   </body>
 </html>
 

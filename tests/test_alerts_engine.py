@@ -27,7 +27,7 @@ def test_ai_alerts_prioritize_risk_then_opportunity_then_watch_then_market():
         },
         {
             "symbol": "WATCHUSDC",
-            "sources": ["WATCHLIST"],
+            "watch_info": {"id": 1, "priority": "MEDIUM"},
             "global_score": 48,
             "global_trend": "NEUTRAL",
             "decision_engine": {

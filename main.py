@@ -51,7 +51,10 @@ from services.personal_data import (
 )
 from services.score_history import get_score_evolution, save_score_snapshot
 
-app = FastAPI(title="Crypto AI Assistant V5")
+APP_VERSION = "1.0.0"
+APP_TITLE = f"Crypto AI Assistant v{APP_VERSION}"
+
+app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 init_db()
@@ -91,7 +94,7 @@ def home(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"title": "Crypto AI Assistant V5"},
+        context={"title": APP_TITLE, "app_version": APP_VERSION},
     )
 
 
@@ -126,11 +129,11 @@ def api_analyze_multi(symbol: str):
 @app.get("/api/scan")
 def api_scan(force: bool = False):
     payload = scanner.get_cached_scan(
-        watchlist=scanner.WATCHLIST,
+        watchlist=_legacy_scan_symbols(),
         limit=120,
         force=force,
     )
-    raw_results = scanner.last_scan_results or payload.get("results", [])
+    raw_results = payload.get("results", [])
     payload["results"] = scanner.enrich_scan_with_decisions(
         raw_results,
         positions=_list_positions_for_decisions(enrich=False),
@@ -186,6 +189,33 @@ def _should_skip_market_analysis(entry: dict) -> bool:
     )
 
 
+def _is_user_market_entry(entry: dict) -> bool:
+    sources = set(entry.get("sources", []))
+    return bool(sources & {"POSITION", "WATCH_CANDIDATE"})
+
+
+def _select_market_analysis_symbols(universe: list[dict], limit: int = 30) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+
+    def add(entry: dict) -> None:
+        symbol = entry["symbol"]
+        if symbol in seen or _should_skip_market_analysis(entry):
+            return
+        selected.append(symbol)
+        seen.add(symbol)
+
+    for entry in universe:
+        if _is_user_market_entry(entry):
+            add(entry)
+
+    for entry in universe:
+        if not _is_user_market_entry(entry):
+            add(entry)
+
+    return selected[:limit]
+
+
 def _confidence_from_score(score: int | float | None, *, default: int = 50) -> int:
     if score is None:
         return default
@@ -233,6 +263,12 @@ def build_alpha_market_row(entry: dict) -> dict:
             "decision_label": "Surveillance Alpha",
             "confidence": confidence,
             "trigger_label": "Alpha",
+            "timing_status": "LIMITED",
+            "timing_label": "Analyse Alpha partielle",
+            "timing_action": "Surveiller sans signal d'entree complet",
+            "timing_reason": "Binance Alpha fournit une analyse de marche limitee pour ce symbole.",
+            "timing_is_actionable": False,
+            "timing_is_technical_signal": False,
             "blocking_factors": [message],
             "positive_factors": ["Prix Alpha disponible"] if current_price is not None else [],
             "reason_summary": message,
@@ -299,10 +335,9 @@ def _strip_unqualified_opportunity(row: dict, constructive_symbols: set[str]) ->
         return row
     if row.get("symbol") in constructive_symbols:
         return row
-
     sources = [source for source in row.get("sources", []) if source != "OPPORTUNITY_SCANNER"]
     badges = [badge for badge in row.get("badges", []) if badge != "Opportunité"]
-    semantic_sources = {"POSITION", "WATCH_CANDIDATE", "WATCHLIST"}
+    semantic_sources = {"POSITION", "WATCH_CANDIDATE"}
     if not any(source in semantic_sources for source in sources):
         return None
     return {
@@ -310,17 +345,15 @@ def _strip_unqualified_opportunity(row: dict, constructive_symbols: set[str]) ->
         "sources": sources,
         "badges": badges,
         "opportunity_info": None,
-        "priority": 5 if sources == ["WATCHLIST"] else row.get("priority", 99),
+        "priority": row.get("priority", 99),
     }
 
 
-def _build_market_payload() -> dict:
-    positions = list_positions()
-    watch_candidates = list_watch_candidates()
+def _market_opportunities() -> list[dict]:
     try:
-        opportunities = get_market_candidates(top_n=30)
+        return get_market_candidates(top_n=10)
     except Exception:
-        opportunities = [
+        return [
             {
                 "symbol": item.get("symbol"),
                 "scan_score": item.get("global_score", 0),
@@ -330,13 +363,31 @@ def _build_market_payload() -> dict:
             if "error" not in item
         ][:10]
 
+
+def _legacy_scan_symbols() -> list[str]:
+    # Preserve explicit legacy selections; otherwise use the V5.2 business universe.
+    if scanner.WATCHLIST:
+        return scanner.WATCHLIST.copy()
+    universe = get_market_universe(
+        positions=_list_positions_for_decisions(enrich=False),
+        watch_candidates=list_watch_candidates(enrich=False),
+        watchlist=[],
+        opportunities=_market_opportunities(),
+    )
+    return _select_market_analysis_symbols(universe, limit=30)
+
+
+def _build_market_payload() -> dict:
+    positions = list_positions()
+    watch_candidates = list_watch_candidates()
+    opportunities = _market_opportunities()
     universe = get_market_universe(
         positions=positions,
         watch_candidates=watch_candidates,
-        watchlist=scanner.WATCHLIST,
+        watchlist=[],
         opportunities=opportunities,
     )
-    symbols = [item["symbol"] for item in universe if not _should_skip_market_analysis(item)][:30]
+    symbols = _select_market_analysis_symbols(universe, limit=30)
     raw_results = scanner.scan_watchlist_multi(
         watchlist=symbols,
         limit=120,
@@ -425,12 +476,12 @@ def api_history(symbol: str, limit: int = 50):
 
 @app.get("/api/top-momentum")
 def api_top_momentum():
-    return scanner.get_top_momentum(watchlist=scanner.WATCHLIST, limit=120, count=5)
+    return scanner.get_top_momentum(watchlist=_legacy_scan_symbols(), limit=120, count=5)
 
 
 @app.get("/api/top-setups")
 def api_top_setups():
-    return scanner.get_top_setups(watchlist=scanner.WATCHLIST, limit=120, count=5)
+    return scanner.get_top_setups(watchlist=_legacy_scan_symbols(), limit=120, count=5)
 
 
 @app.get("/api/decision/{symbol}")
@@ -473,12 +524,12 @@ def api_decision_v5(symbol: str):
 @app.get("/api/decisions")
 def api_decisions(force: bool = False):
     scan_payload = scanner.get_cached_scan(
-        watchlist=scanner.WATCHLIST,
+        watchlist=_legacy_scan_symbols(),
         limit=120,
         force=force,
     )
     positions = _list_positions_for_decisions()
-    raw_results = scanner.last_scan_results or scan_payload.get("results", [])
+    raw_results = scan_payload.get("results", [])
     return build_decisions(raw_results, positions=positions)
 
 
@@ -494,14 +545,19 @@ def api_backtesting_results(limit: int = 100):
 
 @app.get("/api/relative-strength/{symbol}")
 def api_relative_strength(symbol: str):
-    results = scanner.last_scan_results or scanner.get_cached_scan(
-        watchlist=scanner.WATCHLIST,
+    symbols = _legacy_scan_symbols()
+    if "BTCUSDC" not in symbols:
+        symbols.append("BTCUSDC")
+    if symbol.upper() not in symbols:
+        raise HTTPException(status_code=404, detail="Symbol not found in current universe")
+    results = scanner.get_cached_scan(
+        watchlist=symbols,
         limit=120,
         force=False,
     ).get("results", [])
     symbol_item = next((item for item in results if item.get("symbol") == symbol.upper()), None)
     btc_item = next((item for item in results if item.get("symbol") == "BTCUSDC"), None)
-    if not symbol_item or not btc_item:
+    if not symbol_item or not btc_item or "error" in symbol_item or "error" in btc_item:
         raise HTTPException(status_code=404, detail="Symbol or BTC context not found in current scan")
     return calculate_relative_strength(symbol_item, btc_item)
 
@@ -728,8 +784,8 @@ def api_admin_reset(reset_watchlist: bool = False):
             "sync_in_progress": sync_in_progress,
         },
         "message": (
-            "Données locales supprimées. Le marché peut réapparaître via la watchlist "
-            "et les données live Binance."
+            "Données locales supprimées. Le marché peut réapparaître via les positions, "
+            "les surveillances et les propositions live Binance."
         ),
     }
 
@@ -753,6 +809,6 @@ def analyze(symbol: str, interval: str = "1h"):
 def scan_market(interval: str = "1h"):
     return scanner.scan_watchlist(
         interval=interval,
-        watchlist=scanner.WATCHLIST,
+        watchlist=_legacy_scan_symbols(),
         limit=120,
     )

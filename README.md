@@ -1,8 +1,10 @@
-# Crypto AI Assistant V5
+# Crypto AI Assistant v1.0.0
 
 Assistant personnel d'analyse crypto basé sur Binance public et, optionnellement, sur ton compte Binance en lecture seule.
 
-V5 transforme V4 en assistant decisionnel oriente attention utilisateur. Le cockpit Marche fusionne portefeuille, surveillance, watchlist et candidats qualifies, puis remonte seulement les evenements importants dans une section unique `Alertes IA`.
+La release applicative demarre en `v1.0.0` pour faciliter les futures releases Git.
+
+Le moteur interne V5 transforme V4 en assistant decisionnel oriente attention utilisateur. Le cockpit Marche fusionne portefeuille, surveillance et candidats qualifies, puis remonte seulement les evenements importants dans une section unique `Alertes IA`.
 
 V4 a introduit le moteur decisionnel explicite. V5 ajoute les Alertes IA, le scanner interne d'opportunites, l'historique des scores, les triggers avances, le regime de marche, la correlation BTC, le support Binance Alpha et le backtesting de signaux.
 
@@ -80,6 +82,13 @@ Pour eviter aussi les caches Python et pytest :
 PYTHONDONTWRITEBYTECODE=1 venv/bin/python -m pytest -q -p no:cacheprovider
 ```
 
+Les tests unitaires du cockpit utilisent Node.js >= 18, sans paquet supplementaire,
+et bloquent aussi les connexions reseau :
+
+```bash
+node tests/test_cockpit.js
+```
+
 Hors des tests, `CRYPTOAI_DB_PATH` permet de choisir une base de developpement.
 Sans cette variable, le chemin habituel `database/history.db` est conserve.
 
@@ -89,7 +98,7 @@ Nouveaux modules :
 
 - `services/alerts_engine.py` : consolidation des alertes opportunite, surveillance, risque et marche.
 - `services/opportunity_scanner.py` : scan leger de paires Binance USDC, filtrage liquidite/stables/levier, score d'opportunite interne.
-- `services/market_universe.py` : fusion positions, surveillance, opportunites scanner et watchlist pour construire le cockpit Marche.
+- `services/market_universe.py` : fusion positions, surveillance et opportunites scanner pour construire le cockpit Marche.
 - `services/binance_alpha.py` : support Alpha operationnel pour token list, ticker, candles, trend simple, volume, prix et PnL latent.
 - `services/score_history.py` : snapshots SQLite des scores decisionnels et acceleration.
 - `services/advanced_triggers.py` : squeeze, fake breakout, rejet resistance/support, divergences, absorption, acceleration, exhaustion candle, reclaim.
@@ -107,15 +116,19 @@ Tables SQLite V5 :
 
 ## Marche cockpit principal
 
-La vue `Marche` est la vue principale du dashboard. Elle fusionne automatiquement les positions actives Binance, les positions manuelles actives, les cryptos en surveillance, les opportunites automatiques qualifiees et la watchlist principale.
+La vue `Marche` est la vue principale du dashboard. Elle fusionne automatiquement les positions actives Binance, les positions manuelles actives, les cryptos en surveillance et les opportunites automatiques qualifiees.
 
-Une crypto n'apparait qu'une seule fois. Les badges indiquent l'origine de la ligne : `Détenue`, `Surveillance`, `Opportunité`, `Watchlist`, puis la source de marche `Spot`, `Alpha`, `Manuel` ou `Inconnu`.
+Une crypto n'apparait qu'une seule fois. Les badges indiquent l'origine de la ligne : `Détenue`, `Surveillance`, `Opportunité`, puis la source de marche `Spot`, `Alpha`, `Manuel` ou `Inconnu`.
 
-La page Marche permet d'ajouter rapidement une crypto a surveiller sans ouvrir de modal. Les vues Positions et Watchlist restent disponibles comme formulaires de gestion avances depuis les actions contextuelles, mais le cockpit affiche l'essentiel directement.
+La page Marche permet d'ajouter rapidement une crypto a surveiller sans ouvrir de modal. Les vues Positions et Surveillance restent disponibles comme formulaires de gestion avances depuis les actions contextuelles, mais le cockpit affiche l'essentiel directement.
 
 Au chargement de la page, le dashboard appelle automatiquement `/api/market`. Si un cache marche existe en SQLite, il est retourne immediatement avec `source="cache"` et `updated_at`. Si aucun cache n'existe, le backend reconstruit le cockpit puis persiste le resultat. Le bouton `Rafraichir` force une reconstruction live.
 
 Les actions de suppression sont contextuelles : une position manuelle affiche `Supprimer position`, une crypto en surveillance affiche `Retirer surveillance`, et une position Binance est seulement marquee comme geree par Binance. Une ligne qui possede plusieurs sources conserve les sources restantes apres suppression.
+
+Seules les sources metier `POSITION`, `WATCH_CANDIDATE` et `OPPORTUNITY_SCANNER` justifient une ligne. Une metadata comme `BINANCE_SPOT` ne la maintient pas apres retrait de surveillance. Le tableau, les cartes et le detail ouvert sont reconcilies apres suppression.
+
+Les anciens caches sans version compatible ou contenant `WATCHLIST` sont ignores puis reconstruits. Les mutations de surveillance et l'invalidation du cache SQLite partagent une transaction : si l'invalidation echoue, la mutation est annulee egalement.
 
 Le resume portefeuille separe `Valeur portefeuille`, `PnL latent`, `PnL realise` et `PnL total`. Le latent correspond aux positions ouvertes, le realise aux trades clotures, et le total additionne les deux.
 
@@ -159,12 +172,14 @@ Objectif : relire ses decisions, identifier ses biais emotionnels, comprendre le
 Le scanner V5 reste utilise en interne par le cockpit Marche et les Alertes IA :
 
 1. Scan leger sur un univers USDC limite, base sur volume 24h, variation, volatilite, breakout potentiel et force relative.
-2. Analyse complete uniquement sur la watchlist principale et les meilleurs candidats.
+2. Analyse complete uniquement sur les cryptos en surveillance, les positions et les meilleurs candidats automatiques.
 3. Filtrage qualitatif par le moteur decisionnel avant affichage comme candidat.
 
-Une opportunite automatique signifie : "cela merite mon attention". Elle ne signifie pas : "cela va monter".
+Une opportunite automatique signifie : "candidat d'achat a examiner". Elle ne signifie pas : "cela va monter".
 
-Pour rester visible dans Marche comme opportunite, une crypto doit rester constructive apres analyse : `BUY_READY`, `BUY_WATCH` ou `WAIT` constructif, avec scores contexte/setup/marche minimaux et sans risque catastrophique.
+Pour rester visible dans Marche comme opportunite, une crypto doit rester constructive apres analyse et retourner uniquement `BUY_READY` ou `BUY_WATCH`. Une decision `WAIT`, `AVOID`, `SELL_WATCH`, `TAKE_PROFIT` ou `CUT_LOSS` ne doit pas etre affichee comme opportunite automatique.
+
+Ces decisions ne dispensent jamais des autres criteres de qualification (scores, confiance, tendance et absence de fake breakout). Le cockpit garde le moteur `build_decision` existant ; `build_decision_v5` reste explicite.
 
 ## Regime de marche
 
@@ -248,13 +263,15 @@ Difference essentielle :
 
 Regle fondamentale : `BUY_READY` est impossible si `trigger_score < 60`, meme avec un excellent risk/reward.
 
+`timing_status` et `timing_is_technical_signal` decrivent le signal technique. Un signal `CONFIRMED` ne permet pas, a lui seul, une entree : `timing_is_actionable` n'est vrai que pour un signal confirme accompagne de la decision finale `BUY_READY`. Un veto de risque ou une decision de gestion prime toujours. Les scores et les regles de classification des decisions restent inchanges.
+
 Scores V4 :
 
 - `context_score` : trend global, alignement des moyennes mobiles, prix vs MA25/MA99, momentum multi-timeframe, volume.
 - `setup_score` : support/resistance, risk/reward, proximite support, distance resistance, consolidation et structure.
 - `trigger_score` : confirmation d'entree par breakout, MA25, resistance, volume, cloture verte forte ou rebond support.
 - `risk_score` : distance stop-loss, ratio risk/reward, resistance proche, volatilite recente, meche haute et faux breakout possible.
-- `market_score` : tendance BTC, momentum BTC, proportion de cryptos bullish/bearish dans la watchlist.
+- `market_score` : tendance BTC, momentum BTC, proportion de cryptos bullish/bearish dans les resultats analyses.
 - `confidence` : coherence des signaux entre eux. Ce n'est pas une probabilite de gain.
 
 Labels de confiance :
@@ -269,7 +286,7 @@ Labels de confiance :
 - Support, résistance, risk/reward, momentum, volume acceleration et patterns.
 - Moteur decisionnel V4 avec facteurs positifs et facteurs bloquants.
 - Alertes IA unifiees : opportunite, surveillance, risque et contexte marche.
-- Opportunites qualifiees dans le cockpit : `BUY_READY`, `BUY_WATCH`, ou `WAIT` constructif.
+- Opportunites qualifiees dans le cockpit : `BUY_READY` ou `BUY_WATCH`.
 - Support Binance Alpha pour les tokens non disponibles sur Spot avec prix, valeur estimee et PnL latent.
 - Dashboard responsive mobile avec cartes compactes sous 768 px.
 - Menu mobile slide-in allege : Marche, journal, alertes et parametres.
@@ -406,7 +423,6 @@ Marché :
 
 ```text
 GET /api/market
-GET /api/watchlist
 GET /api/analyze/{symbol}?interval=1h
 GET /api/analyze-multi/{symbol}
 GET /api/scan?force=false
@@ -422,11 +438,12 @@ GET /api/backtesting/results
 GET /api/relative-strength/{symbol}
 ```
 
+Les routes historiques `/api/scan`, `/api/decisions`, `/api/top-momentum`, `/api/top-setups` et `/scan` gardent une watchlist explicite si elle est configuree. Sinon, elles analysent l'univers positions/surveillances/candidats Spot, avec priorite aux entrees utilisateur. `/api/relative-strength/{symbol}` ajoute le contexte BTC a cet univers. Le cache du scanner depend des symboles et de la limite de bougies demandes.
+
 Administration locale :
 
 ```text
 POST /api/admin/reset
-POST /api/admin/reset?reset_watchlist=true
 POST /api/admin/cleanup-invalid-symbols
 POST /api/admin/repair-market-sources
 ```
@@ -444,7 +461,7 @@ Le reset supprime les données personnelles et historiques locales :
 
 Il remet aussi à zéro les états en mémoire comme le scan en cache et la synchronisation en cours. Côté dashboard, l'action `Reset local` vide aussi `localStorage` et `sessionStorage`.
 
-Le marché peut réapparaître après reset : c'est normal. Il vient de la watchlist et des données live Binance publiques, pas de SQLite. Pour repartir sans watchlist, utiliser `reset_watchlist=true`; sinon la watchlist par défaut est restaurée.
+Le marché peut réapparaître après reset : c'est normal. Il vient des positions, des cryptos en surveillance et des propositions live Binance publiques, pas uniquement de SQLite.
 
 ## Base locale SQLite
 

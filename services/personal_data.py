@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from services.history import DB_PATH, init_db
+from services.market_cache import invalidate_market_cache
 from services.binance_sync import MIN_ACTIVE_POSITION_VALUE_USDC
 from services.binance_alpha import (
     MARKET_SOURCE_ALPHA,
@@ -520,11 +521,12 @@ def create_watch_candidate(payload: dict[str, Any], db_path: Path | str = DB_PAT
     placeholders = ", ".join("?" for _ in fields)
     with _connect(db_path) as connection:
         if _watch_candidate_exists(connection, data["symbol"]):
-            raise ValueError("Symbol already exists in watchlist")
+            raise ValueError("Symbol already exists in surveillance")
         cursor = connection.execute(
             f"INSERT INTO watch_candidates ({', '.join(fields)}) VALUES ({placeholders})",
             [data[field] for field in fields],
         )
+        invalidate_market_cache(connection)
         connection.commit()
         row = connection.execute(
             "SELECT * FROM watch_candidates WHERE id = ?",
@@ -555,12 +557,13 @@ def update_watch_candidate(
         if not existing:
             return None
         if "symbol" in data and _watch_candidate_exists(connection, data["symbol"], exclude_id=candidate_id):
-            raise ValueError("Symbol already exists in watchlist")
+            raise ValueError("Symbol already exists in surveillance")
         assignments = ", ".join(f"{field} = ?" for field in data)
         connection.execute(
             f"UPDATE watch_candidates SET {assignments} WHERE id = ?",
             [data[field] for field in data] + [candidate_id],
         )
+        invalidate_market_cache(connection)
         connection.commit()
         row = connection.execute(
             "SELECT * FROM watch_candidates WHERE id = ?",
@@ -575,6 +578,8 @@ def delete_watch_candidate(candidate_id: int, db_path: Path | str = DB_PATH) -> 
             "DELETE FROM watch_candidates WHERE id = ?",
             (candidate_id,),
         )
+        if cursor.rowcount:
+            invalidate_market_cache(connection)
         connection.commit()
     return cursor.rowcount > 0
 
@@ -825,7 +830,7 @@ def _normalize_journal_payload(payload: dict[str, Any], *, existing: dict[str, A
         "ai_score": _int_or_none(market.get("global_score") or market.get("score") or existing.get("ai_score")),
         "ai_trend": market.get("global_trend") or market.get("trend") or existing.get("ai_trend"),
         "ai_setup_quality": market.get("setup_quality") or existing.get("ai_setup_quality"),
-        "ai_trigger": decision.get("trigger_label") or (market.get("triggers") or {}).get("label") or existing.get("ai_trigger"),
+        "ai_trigger": decision.get("timing_label") or decision.get("trigger_label") or (market.get("triggers") or {}).get("label") or existing.get("ai_trigger"),
         "ai_market_regime": regime.get("regime") or existing.get("ai_market_regime"),
         "ai_market_score": _int_or_none(decision.get("market_score") or market.get("market_score") or existing.get("ai_market_score")),
         "ai_snapshot_json": _json_dumps(snapshot or {}) if snapshot is not None else existing.get("ai_snapshot_json"),
