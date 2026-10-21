@@ -1,10 +1,14 @@
+import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 
-DB_PATH = Path(__file__).resolve().parent.parent / "database" / "history.db"
+DB_PATH = Path(
+    os.getenv("CRYPTOAI_DB_PATH")
+    or Path(__file__).resolve().parent.parent / "database" / "history.db"
+)
 RESETTABLE_TABLES = [
     "positions",
     "watch_candidates",

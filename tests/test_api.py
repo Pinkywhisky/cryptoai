@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 import services.scanner as scanner
@@ -7,6 +8,21 @@ from main import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def mocked_btc_analysis(monkeypatch):
+    def analyze_btc(symbol, limit=120):
+        assert symbol == "BTCUSDC"
+        assert limit == 120
+        return {
+            "symbol": "BTCUSDC",
+            "global_score": 50,
+            "global_trend": "NEUTRAL",
+            "momentum": {"medium": {"direction": "NEUTRAL", "change_pct": 0}},
+        }
+
+    monkeypatch.setattr(scanner, "analyze_symbol_multi", analyze_btc)
 
 
 def _market_df(symbol: str = "BTCUSDC") -> pd.DataFrame:
@@ -330,7 +346,7 @@ def test_build_alpha_market_row_uses_partial_analysis_without_unknown() -> None:
     assert row["trend"] != "UNKNOWN"
 
 
-def test_api_market_filters_unqualified_automatic_opportunity(monkeypatch) -> None:
+def test_api_market_filters_unqualified_automatic_opportunity(monkeypatch, mocked_btc_analysis) -> None:
     bad_opportunity = [{"symbol": "BADUSDC", "scan_score": 95, "reason": "Volume fort"}]
 
     def fake_scan_watchlist_multi(watchlist, limit=120, save_history=True):

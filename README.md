@@ -68,6 +68,21 @@ Tests :
 pytest
 ```
 
+Les tests utilisent automatiquement une base SQLite temporaire, y compris lors
+de l'import de FastAPI. Ils ignorent le fichier `.env`, neutralisent les cles
+Binance et bloquent les connexions reseau des le chargement de pytest. Chaque
+test repart d'une base applicative temporaire vide. Les autres bases de test
+doivent rester dans les repertoires temporaires de pytest.
+
+Pour eviter aussi les caches Python et pytest :
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 venv/bin/python -m pytest -q -p no:cacheprovider
+```
+
+Hors des tests, `CRYPTOAI_DB_PATH` permet de choisir une base de developpement.
+Sans cette variable, le chemin habituel `database/history.db` est conserve.
+
 ## Architecture V5
 
 Nouveaux modules :
