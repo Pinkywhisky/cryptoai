@@ -200,7 +200,7 @@ def scan_watchlist(
             results.append(
                 {
                     "symbol": symbol.upper(),
-                    "error": str(exc),
+                    "error": "Analyse de marche indisponible",
                 }
             )
 
@@ -225,7 +225,7 @@ def scan_watchlist_multi(
             results.append(
                 {
                     "symbol": symbol.upper(),
-                    "error": str(exc),
+                    "error": "Analyse de marche indisponible",
                 }
             )
 

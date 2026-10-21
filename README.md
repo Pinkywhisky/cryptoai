@@ -52,7 +52,7 @@ La clé API doit être en lecture seule uniquement. Ne jamais activer les permis
 
 Si aucune clé n'est configurée, le dashboard et le scan marché continuent de fonctionner. Le statut affichera : `API Binance privée non configurée`.
 
-## Acces personnel V5.3 ? lot 2A
+## Acces personnel V5.3 ? lots 2A et 2B
 
 L'application est fermee tant que `CRYPTOAI_AUTH_PASSWORD_HASH` n'est pas configure. Aucun mot de passe par defaut, compte supplementaire ou secret de session persistant n'est cree. La configuration existante `.env` et la base personnelle ne sont pas modifiees par ce lot.
 
@@ -60,7 +60,7 @@ Generer un hash Argon2id avec saisie masquee, puis le fournir uniquement a l'env
 
 ```bash
 export CRYPTOAI_AUTH_PASSWORD_HASH="$(venv/bin/python -B tools/hash_password.py)"
-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+venv/bin/python -B tools/serve.py
 ```
 
 Le mot de passe (12 a 1024 caracteres) ne figure pas dans la commande ou son historique. Le hash reste cote serveur. Le cockpit local fonctionne sur `http://127.0.0.1:8000` et `http://localhost:8000`. Pour un autre port ou HTTPS, fournir les origines exactes, sans chemin :
@@ -69,7 +69,7 @@ Le mot de passe (12 a 1024 caracteres) ne figure pas dans la commande ou son his
 export CRYPTOAI_ALLOWED_ORIGINS='https://crypto.example.com'
 ```
 
-Derriere un reverse proxy HTTPS, configurer Uvicorn pour ne faire confiance aux en-tetes proxy qu'a l'adresse de ce proxy (par exemple `--proxy-headers --forwarded-allow-ips=127.0.0.1`). HTTP est accepte uniquement sur les adresses loopback. Une origine ou un Host inattendu est refuse.
+Derriere un reverse proxy HTTPS, fournir `CRYPTOAI_TRUSTED_PROXIES` avec l'adresse precise du proxy et garder les en-tetes proxy Uvicorn desactives via le lanceur ci-dessous. HTTP est accepte uniquement pour des origines loopback. Une origine ou un Host inattendu est refuse.
 
 Les sessions revocables sont conservees en memoire, avec un identifiant aleatoire dans un cookie signe par Starlette/itsdangerous. Le cookie est HttpOnly, SameSite=Strict, sans Domain et avec Secure sous HTTPS. La cle de signature est generee en memoire au demarrage. Utiliser un seul worker : les sessions ne sont pas partagees entre processus et un redemarrage deconnecte les navigateurs.
 
@@ -81,7 +81,7 @@ Les clients API authentifies peuvent utiliser `X-CSRF-Token` avec le jeton d'un 
 
 Le reset et le nettoyage des symboles invalides sont desactives par defaut. Les activer demande `CRYPTOAI_ALLOW_DESTRUCTIVE=1`, un redemarrage, une session valide, un jeton CSRF valide, la ressaisie du mot de passe et une confirmation explicite `RESET` ou `CLEANUP`. Le formulaire de reset reste desactive tant que cette option n'est pas activee. La reparation des sources, les modifications personnelles et la synchronisation demandent une session et le CSRF ; aucune synchronisation privee n'est automatique.
 
-Les echecs de mot de passe sont limites a cinq par fenetre glissante de 60 secondes, globalement pour le compte personnel (connexion et reautorisation). Les sessions anonymes et authentifiees ont des limites de memoire separees pour ne pas deconnecter l'utilisateur lors de nombreuses ouvertures de la page de connexion.
+Les tentatives de mot de passe sont limitees a cinq par adresse normalisee sur une fenetre glissante de 60 secondes (IPv4 et IPv6 /64, connexion et reautorisation). Un succes ne remet a zero que son adresse. Les echecs distribues ajoutent un delai borne a une seconde, sans verrouillage global par compteur; deux verifications Argon2 simultanees maximum sont admises. Une saturation temporaire repond 429 avec Retry-After. Les registres sont expires et bornes (4096 adresses, 60 echecs globaux, 128 sessions de chaque type et huit sessions anonymes par adresse); une adresse n'evince pas les sessions en attente des autres par un simple flood de pages de connexion. Les sessions authentifiees ont leur propre capacite.
 
 Dependances ajoutees :
 
@@ -91,6 +91,64 @@ Dependances ajoutees :
 Le synchronizer token des formulaires et l'en-tete AJAX suivent les [recommandations CSRF OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html). Aucune primitive de chiffrement, de signature ou de hachage n'est reimplementee.
 
 Les fixtures existantes se connectent vraiment par le formulaire et transmettent le CSRF ; aucun contournement de production n'est ajoute. Les tests de securite utilisent des clients anonymes independants, les vraies routes et le meme middleware. Executer les tests Python et JavaScript avec les commandes de la section Tests. La base reste temporaire, les cles Binance sont neutralisees et le reseau est bloque.
+
+### Renforcement V5.3 — lot 2B
+
+Le rendu HTML des donnees API est echappe dans les tableaux, cartes, details, alertes et journal. Les champs textuels simples utilisent `textContent`; les valeurs d'attribut sont aussi echappees, et les segments d'URL sont encodes. Les rares fragments HTML conserves sont construits par des helpers internes explicites. Aucun HTML fourni par l'API n'est considere comme fiable.
+
+La CSP impose `default-src 'none'`, `script-src 'self'`, `style-src 'self'` et `connect-src 'self'`, sans `unsafe-inline` ni `unsafe-eval`. Les styles precedemment en ligne sont dans la feuille CSS. Objets, frames, workers, integration dans une iframe et base URL sont interdits. Les formulaires restent sur la meme origine. Les erreurs gardent les memes protections. La politique `Referrer-Policy: same-origin` preserve l'Origin des formulaires natifs sans envoyer de referent aux sites externes. `no-referrer` aurait provoque `Origin: null` et bloque la connexion native : voir le [standard Fetch](https://fetch.spec.whatwg.org/#append-a-request-origin-header). `Origin: null` reste refuse.
+
+Les ecritures utilisent des modeles Pydantic : champs inconnus refuses, types numeriques JSON sans booleens ou chaines, valeurs finies, quantite positive, couts positifs ou nuls, niveaux optionnels positifs, pourcentages et confiance bornes, textes limites a 4 000 caracteres, symboles limites a 40, identifiants SQLite positifs. Les choix connus sont normalises en majuscules; les anciennes valeurs `ATTENTE`, `ACHAT` et `VENTE` du journal restent acceptees. Une position exige symbole, quantite, prix moyen et investissement. Un PUT reste partiel : omettre un champ le conserve; `null` peut effacer un niveau optionnel, mais pas l'identite ou les montants obligatoires. Le journal accepte toujours des PnL negatifs. Les historiques ne sont pas migres. Les floats et tous les calculs financiers restent inchanges; leur precision comptable releve du lot financier.
+
+Les corps sont limites a 64 Kio, y compris sans Content-Length, et les formulaires d'identification a 4 Kio. Les objets JSON a cles dupliquees, les encodages invalides et les structures excessivement imbriquees sont refuses avant le service metier. Une validation invalide retourne 422 sans ecriture partielle. Les champs AI historiques acceptes par l'API restent des metadonnees : le service construit toujours son propre snapshot.
+
+Les evenements de securite sont des objets JSON horodates : route sous forme de modele, methode, statut, classe d'exception et identifiant aleatoire `X-Request-ID`. Les valeurs du corps, les query strings, cookies, jetons et messages bruts d'exception sont exclus. Le lanceur desactive l'access log Uvicorn, qui pourrait enregistrer une URL contenant un secret. Les echecs tardifs d'une reponse deja commencee ferment la reponse; aucun detail interne n'est renvoye et aucun traceback sensible n'est journalise.
+
+#### Configuration locale et reverse proxy
+
+Le lanceur recommande est `venv/bin/python -B tools/serve.py`. Il fixe un worker, 64 requetes concurrentes maximum, cinq secondes de keep-alive, aucun access log brut et **proxy_headers=False**. La confiance proxy appartient exclusivement a l'application. Une ecoute hors loopback exige des origines HTTPS et des proxies explicitement approuves.
+
+Variables supplementaires, fournies a l'environnement du serveur :
+
+| Variable | Defaut / regle |
+| --- | --- |
+| `CRYPTOAI_ENV` | `development`; `production` exige HTTPS et un hash configure |
+| `CRYPTOAI_TRUSTED_PROXIES` | Vide; adresses/CIDR explicites, jamais `*`, IPv4 /0 ou IPv6 /0 |
+| `CRYPTOAI_ALLOWED_ORIGINS` | Origines exactes; les deux adresses locales port 8000 par defaut |
+| `CRYPTOAI_SESSION_SECONDS` | 3600, duree absolue de 60 a 86400 secondes |
+| `CRYPTOAI_ALLOW_DESTRUCTIVE` | 0; conserver desactive hors maintenance volontaire |
+
+En production, `/docs`, `/redoc`, `/docs/oauth2-redirect` et `/openapi.json` ne sont pas exposes, meme apres connexion. En developpement, les pages de documentation redirigent vers le schema JSON local authentifie; aucun script Swagger/ReDoc distant n'est charge.
+
+Ne pas activer le traitement des proxies dans Uvicorn en plus de celui de l'application : il ferait perdre l'adresse du pair de transport avant sa verification. Le lanceur configure aussi un flux JSON INFO pour crypto_ai.security, independant du niveau du logger racine. Pour un lancement Uvicorn manuel, configurer ce logger au niveau INFO avec une sortie console, puis utiliser explicitement `--no-proxy-headers --no-access-log --workers 1` et appliquer les memes limites que le lanceur. L'application ne peut pas recuperer une adresse deja remplacee par un serveur ASGI mal configure.
+
+Un proxy approuve peut fournir `X-Forwarded-For` et `X-Forwarded-Proto`. La chaine d'adresses est parcourue depuis le dernier saut jusqu'au premier pair non approuve; IPv4 mappee en IPv6 est normalisee. Les en-tetes de clients directs sont ignores; `Forwarded` et `X-Forwarded-Host` ne sont jamais utilises. Une chaine invalide ou dupliquee provenant d'un proxy approuve est refusee.
+
+Pour un futur Compose + Nginx/Caddy : conserver le backend sur un reseau prive, ne pas publier son port vers Internet, approuver l'adresse precise du proxy, terminer HTTPS au proxy et conserver le Host original. Le proxy doit remplacer les en-tetes X-Forwarded-For/Proto par ses propres valeurs, refuser les Host inconnus, borner tailles et delais et ajouter sa propre protection contre les floods. Conserver CSP et HSTS sans politiques contradictoires; HSTS est emis par l'application pour les requetes HTTPS reconnues. Les secrets restent hors image, fichiers JavaScript et URL. Le volume SQLite et ses sauvegardes restent prives et accessibles uniquement au compte de service.
+
+Permissions conseillees a examiner manuellement : `chmod 600 .env` et droits restrictifs du repertoire SQLite/sauvegardes. Ces commandes ne sont pas executees par les outils de validation et ne remplacent aucun fichier personnel. Ne pas recopier un exemple par-dessus un .env existant.
+
+Les versions de FastAPI, Starlette, Pydantic, Uvicorn et bibliotheques HTTP/templates declarees correspondent aux versions mineures testees. Pydantic et Starlette deviennent des dependances directes explicites car leurs API sont utilisees directement; ils etaient deja installes transitivement. Aucune bibliotheque runtime supplementaire n'est installee. Revalider les mises a jour et les avis de vulnerabilites avant une exposition publique; cette campagne n'est pas un audit exhaustif de la chaine de dependances.
+
+#### Validation reproductible
+
+Depuis la racine, dans WSL :
+
+```bash
+venv/bin/python -B tools/verify_offline.py
+venv/bin/python -B tools/verify_offline.py --coverage
+node tests/test_cockpit.js
+venv/bin/python -B tools/verify_security_http.py
+venv/bin/python -B tools/verify_security_mutations.py --node /chemin/vers/node
+```
+
+La couverture utilise le module standard `trace` : lignes Python applicatives, threads inclus, pas couverture de branches. Ses fichiers sont ecrits sous /tmp. Les tests HTTP lancent puis arretent Uvicorn avec SQLite temporaire, aucune lecture du .env et des stubs pour les donnees externes. Seules les connexions loopback du pilote sont autorisees; le serveur ne peut faire aucun appel sortant. Les routes /api/test existent uniquement dans cette fixture de tests, jamais dans main ou le lanceur de production. Les mutations copient seulement les sources dans /tmp, y reintroduisent les defauts puis detruisent la copie; les sources originales ne sont jamais mutees.
+
+Les tests JavaScript demandent Node >= 18; la sonde de navigateur reel utilise WebSocket natif et demande Node >= 22 (version 24 testee). Si Node n'est disponible que sous Windows, utiliser son executable Windows pour les tests JavaScript; --node peut recevoir son chemin /mnt/c/... depuis WSL.
+
+Pour le DOM reel sous Windows : lancer `tools/verify_security_http.py --serve-browser`, puis `node tools/verify_security_browser.cjs http://127.0.0.1:PORT` avec l'URL affichee. Le navigateur Edge utilise un profil jetable, un proxy sortant volontairement indisponible, une interception CDP limitant la page a cette origine locale et aucune bibliotheque ajoutee. Le mot de passe affiche par cette fixture est exclusivement une valeur de test. Creer ensuite le fichier stop affiche pour terminer le serveur. Les captures desktop/mobile sont placees dans le repertoire temporaire affiche, jamais dans le depot.
+
+Limites d'exploitation : un seul processus; quotas partages entre clients d'un meme NAT ou /64 IPv6; une attaque distribuee continue peut encore saturer reseau/CPU. Les limites applicatives ne remplacent pas les limites du proxy. Aucune execution privee Binance ni aucun ordre n'est necessaire a ces tests.
 
 ### Inventaire des routes et des effets
 
@@ -144,7 +202,7 @@ Toutes les routes metier, les anciennes routes et la documentation sont privees 
 | POST | `/api/admin/cleanup-invalid-symbols` | Suppression de donnees / maintenance destructive | Session + jeton CSRF + activation explicite + confirmation + mot de passe |
 | POST | `/api/admin/repair-market-sources` | Mise a jour des sources de marche personnelles | Session + CSRF |
 | GET | `/analyze/{symbol}` | Analyse / selection de marche, contexte personnel selon la route | Session |
-| GET | `/scan` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/scan` | Analyse / selection de marche, contexte personnel selon la route | Session + CSRF meme en GET |
 | GET | `/login` | Formulaire de connexion / etat de configuration | Public, aucune donnee personnelle |
 | POST | `/login` | Creation et rotation de session | Jeton CSRF preconnexion + mot de passe + limitation des tentatives |
 | POST | `/logout` | Revocation de session | Session + jeton CSRF |
@@ -155,7 +213,7 @@ Toutes les routes metier, les anciennes routes et la documentation sont privees 
 ## Lancement
 
 ```bash
-uvicorn main:app --reload
+venv/bin/python -B tools/serve.py
 ```
 
 Dashboard :

@@ -1,12 +1,15 @@
 import logging
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Path, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
+from services.security_logging import security_event
+from services.api_models import PositionCreate, PositionUpdate, WatchCreate, WatchUpdate, JournalCreate, JournalUpdate
 from services.auth import SECURITY_HEADERS, authorize_destructive, install_security, redact_error_message
 
 import services.scanner as scanner
@@ -57,6 +60,12 @@ from services.score_history import get_score_evolution, save_score_snapshot
 APP_VERSION = "1.0.0"
 APP_TITLE = f"Crypto AI Assistant v{APP_VERSION}"
 
+# Shared HTTP constraints; service calls and financial values remain unchanged.
+SymbolPath = Annotated[str, Path(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
+RecordIdPath = Annotated[int, Path(ge=1, le=9223372036854775807)]
+HistoryLimit = Annotated[int, Query(ge=1, le=1000)]
+KlineInterval = Annotated[str, Query(pattern=r"^(1s|1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w|1M)$")]
+
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -76,15 +85,17 @@ def api_error(message: str, status_code: int = 400) -> JSONResponse:
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    security_event(request, "validation_rejected", 422, exc)
     return api_error("Invalid request payload", status_code=422)
 
 
 @app.exception_handler(Exception)
 async def api_exception_handler(request: Request, exc: Exception):
     if request.url.path.startswith("/api/"):
-        logger.error("Unhandled API error")
+        security_event(request, "unhandled_exception", 500, exc)
         return api_error("Internal server error", status_code=500)
-    raise exc
+    security_event(request, "unhandled_exception", 500, exc)
+    return HTMLResponse("Erreur interne. Reessayez plus tard.", status_code=500, headers=SECURITY_HEADERS)
 
 
 def _list_positions_for_decisions(enrich: bool = True):
@@ -114,7 +125,7 @@ def get_watchlist():
 
 
 @app.get("/api/analyze/{symbol}")
-def api_analyze(symbol: str, interval: str = "1h"):
+def api_analyze(symbol: SymbolPath, interval: KlineInterval = "1h"):
     try:
         return scanner.analyze_symbol(symbol=symbol, interval=interval, limit=120)
     except Exception as exc:
@@ -122,7 +133,7 @@ def api_analyze(symbol: str, interval: str = "1h"):
 
 
 @app.get("/api/analyze-multi/{symbol}")
-def api_analyze_multi(symbol: str):
+def api_analyze_multi(symbol: SymbolPath):
     try:
         analysis = scanner.analyze_symbol_multi(symbol=symbol, limit=120)
         analysis["decision_engine"] = build_decision(
@@ -480,7 +491,7 @@ def api_ai_alerts(force: bool = False):
 
 
 @app.get("/api/history/{symbol}")
-def api_history(symbol: str, limit: int = 50):
+def api_history(symbol: SymbolPath, limit: HistoryLimit = 50):
     return get_symbol_history(symbol=symbol, limit=limit)
 
 
@@ -495,7 +506,7 @@ def api_top_setups():
 
 
 @app.get("/api/decision/{symbol}")
-def api_decision(symbol: str):
+def api_decision(symbol: SymbolPath):
     try:
         analysis = scanner.analyze_symbol_multi(symbol=symbol, limit=120)
         positions = _list_positions_for_decisions()
@@ -511,7 +522,7 @@ def api_decision(symbol: str):
 
 
 @app.get("/api/decision-v5/{symbol}")
-def api_decision_v5(symbol: str):
+def api_decision_v5(symbol: SymbolPath):
     try:
         analysis = scanner.analyze_symbol_multi(symbol=symbol, limit=120)
         positions = _list_positions_for_decisions()
@@ -544,17 +555,17 @@ def api_decisions(force: bool = False):
 
 
 @app.get("/api/score-history/{symbol}")
-def api_score_history(symbol: str, limit: int = 50):
+def api_score_history(symbol: SymbolPath, limit: HistoryLimit = 50):
     return get_score_evolution(symbol, limit=limit)
 
 
 @app.get("/api/backtesting/results")
-def api_backtesting_results(limit: int = 100):
+def api_backtesting_results(limit: HistoryLimit = 100):
     return list_backtest_results(limit=limit)
 
 
 @app.get("/api/relative-strength/{symbol}")
-def api_relative_strength(symbol: str):
+def api_relative_strength(symbol: SymbolPath):
     symbols = _legacy_scan_symbols()
     if "BTCUSDC" not in symbols:
         symbols.append("BTCUSDC")
@@ -588,32 +599,32 @@ def api_inactive_positions():
 
 
 @app.post("/api/positions")
-def api_create_position(payload: dict):
+def api_create_position(payload: PositionCreate, request: Request):
     try:
-        return create_position(payload)
+        return create_position(payload.payload())
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
-    except Exception:
-        logger.error("Position creation failed")
+    except Exception as exc:
+        security_event(request, "write_failed", 500, exc)
         return api_error("Unable to add position", status_code=500)
 
 
 @app.put("/api/positions/{position_id}")
-def api_update_position(position_id: int, payload: dict):
+def api_update_position(position_id: RecordIdPath, payload: PositionUpdate, request: Request):
     try:
-        position = update_position(position_id, payload)
+        position = update_position(position_id, payload.payload())
         if not position:
             return api_error("Position not found", status_code=404)
         return position
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
-    except Exception:
-        logger.error("Position update failed")
+    except Exception as exc:
+        security_event(request, "write_failed", 500, exc)
         return api_error("Unable to update position", status_code=500)
 
 
 @app.delete("/api/positions/{position_id}")
-def api_delete_position(position_id: int):
+def api_delete_position(position_id: RecordIdPath):
     if not delete_position(position_id):
         return api_error("Position not found", status_code=404)
     return {"deleted": True}
@@ -625,23 +636,23 @@ def api_watch_candidates():
 
 
 @app.post("/api/watch-candidates")
-def api_create_watch_candidate(payload: dict):
+def api_create_watch_candidate(payload: WatchCreate, request: Request):
     try:
-        candidate = create_watch_candidate(payload)
+        candidate = create_watch_candidate(payload.payload())
         logger.info("Watch candidate added: %s", candidate.get("symbol"))
         return candidate
     except ValueError as exc:
         logger.info("Watch candidate rejected")
         return api_error(str(exc), status_code=400)
     except Exception as exc:
-        logger.error("Watch candidate creation failed")
+        security_event(request, "write_failed", 500, exc)
         return api_error("Unable to add watch candidate", status_code=500)
 
 
 @app.put("/api/watch-candidates/{candidate_id}")
-def api_update_watch_candidate(candidate_id: int, payload: dict):
+def api_update_watch_candidate(candidate_id: RecordIdPath, payload: WatchUpdate, request: Request):
     try:
-        candidate = update_watch_candidate(candidate_id, payload)
+        candidate = update_watch_candidate(candidate_id, payload.payload())
         if not candidate:
             return api_error("Watch candidate not found", status_code=404)
         logger.info("Watch candidate updated: %s", candidate.get("symbol"))
@@ -649,13 +660,13 @@ def api_update_watch_candidate(candidate_id: int, payload: dict):
     except ValueError as exc:
         logger.info("Watch candidate update rejected")
         return api_error(str(exc), status_code=400)
-    except Exception:
-        logger.error("Watch candidate update failed")
+    except Exception as exc:
+        security_event(request, "write_failed", 500, exc)
         return api_error("Unable to update watch candidate", status_code=500)
 
 
 @app.delete("/api/watch-candidates/{candidate_id}")
-def api_delete_watch_candidate(candidate_id: int):
+def api_delete_watch_candidate(candidate_id: RecordIdPath):
     if not delete_watch_candidate(candidate_id):
         logger.info("Watch candidate delete not found: %s", candidate_id)
         return api_error("Watch candidate not found", status_code=404)
@@ -669,17 +680,17 @@ def api_journal():
 
 
 @app.post("/api/journal")
-def api_create_journal_entry(payload: dict):
+def api_create_journal_entry(payload: JournalCreate, request: Request):
     try:
-        return create_journal_entry(payload)
+        return create_journal_entry(payload.payload())
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
 
 
 @app.put("/api/journal/{entry_id}")
-def api_update_journal_entry(entry_id: int, payload: dict):
+def api_update_journal_entry(entry_id: RecordIdPath, payload: JournalUpdate, request: Request):
     try:
-        entry = update_journal_entry(entry_id, payload)
+        entry = update_journal_entry(entry_id, payload.payload())
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
     if not entry:
@@ -688,7 +699,7 @@ def api_update_journal_entry(entry_id: int, payload: dict):
 
 
 @app.delete("/api/journal/{entry_id}")
-def api_delete_journal_entry(entry_id: int):
+def api_delete_journal_entry(entry_id: RecordIdPath):
     if not delete_journal_entry(entry_id):
         return api_error("Journal entry not found", status_code=404)
     return {"deleted": True}
@@ -750,7 +761,7 @@ def api_binance_balances():
 
 
 @app.get("/api/binance/trades/{symbol}")
-def api_binance_trades(symbol: str):
+def api_binance_trades(symbol: SymbolPath):
     return get_stored_trades(symbol)
 
 
@@ -815,12 +826,12 @@ def api_repair_market_sources():
 
 
 @app.get("/analyze/{symbol}")
-def analyze(symbol: str, interval: str = "1h"):
+def analyze(symbol: SymbolPath, interval: KlineInterval = "1h"):
     return api_analyze(symbol=symbol, interval=interval)
 
 
 @app.get("/scan")
-def scan_market(interval: str = "1h"):
+def scan_market(interval: KlineInterval = "1h"):
     return scanner.scan_watchlist(
         interval=interval,
         watchlist=_legacy_scan_symbols(),

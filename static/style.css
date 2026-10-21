@@ -1741,3 +1741,12 @@ th[data-tooltip]:hover::after,
     line-height: 1.35;
   }
 }
+
+/* CSP: presentation formerly embedded in dynamic HTML. */
+.clickable-row { cursor: pointer; }
+.score-unit { font-size: 11px; color: var(--muted); }
+.symbol-badges { margin-top: 4px; display: flex; gap: 4px; }
+.symbol-note { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.compact-action { height: 26px; padding: 0 8px; font-size: 11px; }
+.compact-action.danger-action { background: var(--sell-bg); color: var(--sell); border-color: transparent; }
+[hidden] { display: none !important; }

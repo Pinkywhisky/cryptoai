@@ -41,7 +41,7 @@ function functionSource(name) {
 
 function loadFunctions(names, globals = {}) {
   const context = vm.createContext(globals);
-  vm.runInContext(names.map(functionSource).join("\n"), context, { filename: "static/app.js" });
+  vm.runInContext([...new Set(["escapeHtml", ...names])].map(functionSource).join("\n"), context, { filename: "static/app.js" });
   return context;
 }
 
@@ -358,4 +358,116 @@ test("missing expiry metadata closes the UI instead of keeping an indefinite ses
   const { context } = guardedClient({ remaining: "" });
   context.scheduleSessionExpiry();
   assert.equal(context.sessionExpired, true);
+});
+
+
+// Lot 2B: execute the real rendering functions against hostile API data.
+function renderingHarness() {
+  const node = () => ({ innerHTML: "", textContent: "", classList: { add() {}, contains() { return false; } } });
+  const globals = {
+    resultsBody: node(), mobileCards: node(), detailContent: node(), detailTitle: node(),
+    detailSubtitle: node(), detailPanel: node(), positionsBody: node(), watchBody: node(),
+    journalList: node(), journalStats: node(), aiAlertsList: node(), portfolioSummary: node(),
+    watchFeedback: { textContent: "", dataset: {} }, marketFeedback: { textContent: "", dataset: {} },
+    latestPositions: [], latestWatchCandidates: [], latestJournalEntries: [], latestRows: [],
+    latestJournalAnalytics: null, dashboardState: {}, detailRenderId: 0, currentDevice: "desktop",
+    journalFilterSymbol: { value: "" }, journalFilterEmotion: { value: "" }, journalFilterResult: { value: "" },
+    openMobileCards: new Set(), historyCache: new Map(), MIN_ACTIVE_POSITION_VALUE_USDC: 1,
+    document: { body: { classList: { add() {} } } },
+    apiFetch: async () => ({ history: [], trend: "stable", acceleration: "stable" }),
+  };
+  const end = source.indexOf("// --- CHARGEMENT DES FLUX DATA ---");
+  const names = [...source.slice(0, end).matchAll(/^(?:async )?function (\w+)\(/gm)]
+    .map((match) => match[1]).filter((name) => name !== "apiFetch");
+  return loadFunctions(names, globals);
+}
+
+function assertInertHtml(html) {
+  for (const tag of html.match(/<(?:[^>"']|"[^"]*"|'[^']*')+>/g) || []) {
+    assert.doesNotMatch(tag, /^<(?:script|img|iframe|math)\b/i);
+    const attributes = tag.replace(/"[^"]*"|'[^']*'/g, '""');
+    assert.doesNotMatch(attributes, /\son\w+\s*=/i);
+  }
+}
+
+const xssPayloads = [
+  "<script>globalThis.compromised=1</script>",
+  '"><img src=x onerror="globalThis.compromised=1">',
+  "javascript:globalThis.compromised=1",
+  "<svg/onload=globalThis.compromised=1>",
+  '<iframe srcdoc="<script>globalThis.compromised=1</script>">',
+  "& < > \" ' Unicode é 漢字 \u2028",
+];
+
+for (const payload of xssPayloads) {
+  test("all real renderers treat hostile API values as text: " + payload.slice(0, 25), async () => {
+    const c = renderingHarness();
+    const decision = {
+      decision: "WAIT", decision_label: payload, confidence: payload, reason_summary: payload,
+      blocking_factors: [payload], positive_factors: [payload], timing_label: payload,
+      timing_action: payload, timing_reason: payload, context_score: payload,
+    };
+    const item = {
+      symbol: payload, current_price: 10, global_score: payload, global_trend: payload,
+      setup_quality: payload, decision_engine: decision, patterns: { upper_wick: { detected: true, label: payload } },
+      watch_info: { id: payload, priority: payload }, sources: ["WATCH_CANDIDATE"],
+      opportunity_info: { scan_score: payload, reason: payload },
+    };
+    c.renderRows([item]);
+    c.renderDetail(item);
+    c.renderPositions([{ symbol: payload, id: payload, status: payload, source: "MANUAL", trend_score: payload }]);
+    c.renderWatchCandidates([{ symbol: payload, id: payload, priority: payload, signal: payload, score: payload }]);
+    c.renderAiAlerts({ alerts: [{ symbol: payload, type: payload, severity: payload, title: payload, message: payload, confidence: payload }] });
+    c.renderJournal([{ symbol: payload, id: payload, decision_type: payload, trade_type: payload, emotion: payload,
+      result_status: payload, reason: payload, notes: payload, ai_trend: payload,
+      ai_snapshot: { decision: { reason_summary: payload } } }]);
+    c.renderJournalStats({ winrate: { closed_trades: payload }, setups: { best_setup: { setup: payload } } });
+    const html = [c.resultsBody, c.mobileCards, c.detailContent, c.positionsBody, c.watchBody, c.aiAlertsList, c.journalList, c.journalStats]
+      .map((element) => element.innerHTML).join("\n");
+    assertInertHtml(html);
+    assert.doesNotMatch(html, /(?:href|src)=["']javascript:/i);
+    assert.ok(html.includes(c.escapeHtml(payload)));
+    assert.match(c.aiAlertsList.innerHTML, /ai-market severity-low/);
+    c.renderRows([{ ...item, error: payload }]);
+    c.renderDetail({ ...item, error: payload });
+    assertInertHtml(c.resultsBody.innerHTML + c.detailContent.innerHTML);
+    await Promise.resolve();
+  });
+}
+
+test("hostile error messages are written through textContent", () => {
+  const c = renderingHarness();
+  const message = '<img src=x onerror="globalThis.compromised=1">';
+  c.setMarketFeedback(message, "error");
+  c.setWatchFeedback(message, "error");
+  assert.equal(c.marketFeedback.textContent, message);
+  assert.equal(c.watchFeedback.textContent, message);
+  assert.equal(c.marketFeedback.innerHTML, undefined);
+});
+
+test("history requests encode hostile symbols as a single path segment", async () => {
+  const c = renderingHarness();
+  const calls = [];
+  c.apiFetch = async (url) => { calls.push(url); return []; };
+  const symbol = '../admin/reset?key=<x>&other="y"';
+  await c.enrichWithHistory([{ symbol }]);
+  assert.equal(calls[0], "/api/history/" + encodeURIComponent(symbol) + "?limit=8");
+});
+
+for (const url of ["http://name:password@localhost:8000/api/positions", "/api/positions#secret", "/logout"]) {
+  test("API refuses credentials, fragments and non-API targets: " + url, async () => {
+    const { context, calls } = guardedClient();
+    await assert.rejects(context.apiFetch(url), /externe interdite/);
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("a delayed response cannot refill the UI after session expiry", async () => {
+  const { context, calls } = guardedClient();
+  let complete;
+  context.fetch = () => new Promise((resolve) => { complete = resolve; });
+  const pending = context.apiFetch("/api/positions");
+  context.handleSessionExpired();
+  complete({ status: 200, ok: true, headers: { get: () => "application/json" }, text: async () => '{"private":"data"}' });
+  await assert.rejects(pending, /Session expiree/);
 });

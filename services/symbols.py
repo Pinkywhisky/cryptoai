@@ -154,7 +154,7 @@ def _resolve_spot_symbol(raw: str, quote_asset: str = "USDC") -> dict[str, Any] 
     try:
         exchange_symbols = get_exchange_symbols()
     except Exception as exc:
-        logger.warning("[RESOLVER] Spot exchangeInfo unavailable for %s: %s", raw, exc)
+        logger.warning("[RESOLVER] Spot exchangeInfo unavailable (%s)", type(exc).__name__)
         exchange_symbols = set()
 
     if exact_quote and raw in exchange_symbols:

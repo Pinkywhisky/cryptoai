@@ -216,7 +216,7 @@ def get_market_snapshot(symbol: str) -> dict[str, Any]:
             "symbol": normalized,
             "is_valid_symbol": True,
             "analysis_available": False,
-            "market_error": str(exc),
+            "market_error": "Analyse de marche indisponible",
         }
 
     snapshot["is_valid_symbol"] = True
@@ -760,7 +760,7 @@ def _build_journal_ai_snapshot(symbol: str) -> dict[str, Any]:
             "symbol": resolution.get("symbol") or symbol,
             "analysis_available": False,
             "market_source": market_source,
-            "market_error": str(exc),
+            "market_error": "Analyse de marche indisponible",
         }
 
     if snapshot.get("analysis_available"):
@@ -774,14 +774,14 @@ def _build_journal_ai_snapshot(symbol: str) -> dict[str, Any]:
                 positions=[],
             )
         except Exception as exc:
-            decision = {"error": str(exc)}
+            decision = {"error": "Decision indisponible"}
 
     try:
         from services.market_regime import determine_market_regime
 
         regime = determine_market_regime([snapshot]) if snapshot else {}
     except Exception as exc:
-        regime = {"error": str(exc)}
+        regime = {"error": "Regime de marche indisponible"}
 
     return {
         "resolution": resolution,

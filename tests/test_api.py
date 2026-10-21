@@ -596,7 +596,7 @@ def test_positions_api_routes(monkeypatch) -> None:
     monkeypatch.setattr(app_module, "delete_position", lambda position_id: True)
 
     assert client.get("/api/positions").json()[0]["symbol"] == "BTCUSDC"
-    assert client.post("/api/positions", json={"symbol": "BTCUSDC"}).json()["id"] == 1
+    assert client.post("/api/positions", json={"symbol": "BTCUSDC", "quantity": 1, "average_buy_price": 100, "invested_amount": 100}).json()["id"] == 1
     assert client.put("/api/positions/1", json={"note": "ok"}).json()["note"] == "ok"
     assert client.delete("/api/positions/1").json()["deleted"] is True
 
@@ -657,7 +657,7 @@ def test_invalid_symbol_create_routes_return_json(monkeypatch) -> None:
     monkeypatch.setattr(app_module, "create_position", invalid)
 
     watch_response = client.post("/api/watch-candidates", json={"symbol": "CKP"})
-    position_response = client.post("/api/positions", json={"symbol": "CKP"})
+    position_response = client.post("/api/positions", json={"symbol": "CKP", "quantity": 1, "average_buy_price": 100, "invested_amount": 100})
 
     assert watch_response.status_code == 400
     assert position_response.status_code == 400

@@ -31,6 +31,8 @@ def pytest_configure(config):
     patches.setenv("CRYPTOAI_ALLOWED_ORIGINS", "http://localhost:8000")
     patches.setenv("CRYPTOAI_SESSION_SECONDS", "3600")
     patches.setenv("CRYPTOAI_ALLOW_DESTRUCTIVE", "0")
+    patches.setenv("CRYPTOAI_ENV", "development")
+    patches.setenv("CRYPTOAI_TRUSTED_PROXIES", "")
 
 
     if config.option.basetemp is None:

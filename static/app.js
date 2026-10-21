@@ -423,8 +423,8 @@ function symbolMetaHtml(symbol) {
   if (badges.length === 0 && notes.length === 0) return "";
 
   return `
-    <div class="symbol-badges" style="margin-top: 4px; display: flex; gap: 4px;">${badges.join("")}</div>
-    <div class="symbol-note" style="font-size: 11px; color: var(--muted); margin-top: 2px;">${notes.join(" | ")}</div>
+    <div class="symbol-badges">${badges.join("")}</div>
+    <div class="symbol-note">${notes.join(" | ")}</div>
   `;
 }
 
@@ -480,7 +480,7 @@ function marketSymbolMetaHtml(item) {
   if (watch) {
     notes.push(`Visé: ${formatNumber(watch.target_buy_price, 6)}`);
     notes.push(`Dist: ${formatNumber(watch.distance_to_target_pct, 2)}%`);
-    notes.push(`Prio: ${watch.priority ?? "-"}`);
+    notes.push(`Prio: ${escapeHtml(watch.priority ?? "-")}`);
   }
   const sourceInfo = position?.market_source === "BINANCE_ALPHA" ? position : watch?.market_source === "BINANCE_ALPHA" ? watch : null;
   if (sourceInfo) {
@@ -492,8 +492,8 @@ function marketSymbolMetaHtml(item) {
     }
   }
   if (opportunity) {
-    notes.push(`Scan: ${opportunity.scan_score ?? "-"}`);
-    notes.push(shortText(opportunity.reason, 48));
+    notes.push(`Scan: ${escapeHtml(opportunity.scan_score ?? "-")}`);
+    notes.push(escapeHtml(shortText(opportunity.reason, 48)));
   }
 
   return `
@@ -509,10 +509,10 @@ function marketActionsHtml(item, compact = false) {
   const isManualPosition = position?.id && position.source === "MANUAL";
 
   if (item.watch_info?.id) {
-    actions.push(`<button type="button" class="${compact ? "mobile-detail-button danger-action" : "inline-action danger-action"}" data-market-remove-watch="${item.watch_info.id}">Retirer surveillance</button>`);
+    actions.push(`<button type="button" class="${compact ? "mobile-detail-button danger-action" : "inline-action danger-action"}" data-market-remove-watch="${escapeHtml(item.watch_info.id)}">Retirer surveillance</button>`);
   }
   if (isManualPosition) {
-    actions.push(`<button type="button" class="${compact ? "mobile-detail-button danger-action" : "inline-action danger-action"}" data-market-delete-position="${position.id}">Supprimer position</button>`);
+    actions.push(`<button type="button" class="${compact ? "mobile-detail-button danger-action" : "inline-action danger-action"}" data-market-delete-position="${escapeHtml(position.id)}">Supprimer position</button>`);
   }
   if (!actions.length && hasBinanceSource) {
     actions.push(`<span class="managed-source">Géré par Binance Spot</span>`);
@@ -587,7 +587,8 @@ function handleSessionExpired() {
 
 async function apiFetch(url, options = {}) {
   if (sessionExpired) throw new Error("Session expiree. Reconnectez-vous.");
-  if (new URL(url, window.location.origin).origin !== window.location.origin) {
+  const target = new URL(url, window.location.origin);
+  if (target.origin !== window.location.origin || target.username || target.password || target.hash || !target.pathname.startsWith("/api/")) {
     throw new Error("Requete externe interdite.");
   }
   const headers = { "Content-Type": "application/json", ...options.headers, "X-CSRF-Guard": "1" };
@@ -597,12 +598,14 @@ async function apiFetch(url, options = {}) {
     credentials: "same-origin",
     redirect: "error",
   });
+  if (sessionExpired) throw new Error("Session expiree. Reconnectez-vous.");
   if (response.status === 401) {
     handleSessionExpired();
     throw new Error("Session expiree. Reconnectez-vous.");
   }
   const contentType = response.headers.get("content-type") || "";
   const text = await response.text();
+  if (sessionExpired) throw new Error("Session expiree. Reconnectez-vous.");
   let payload = null;
 
   if (text && contentType.includes("application/json")) {
@@ -641,7 +644,7 @@ async function enrichWithHistory(rows) {
     if (item.error) return item;
     if (historyCache.has(item.symbol)) return { ...item, history: historyCache.get(item.symbol) };
     try {
-      const history = await apiFetch(`/api/history/${item.symbol}?limit=8`);
+      const history = await apiFetch(`/api/history/${encodeURIComponent(String(item.symbol))}?limit=8`);
       historyCache.set(item.symbol, history);
       return { ...item, history };
     } catch {
@@ -686,7 +689,7 @@ function renderRows(rows) {
     if (item.error) {
       return `
         <tr data-row-index="${index}" class="unavailable-row">
-          <td><div class="symbol-cell"><strong>${item.symbol}</strong>${marketSymbolMetaHtml(item)}</div></td>
+          <td><div class="symbol-cell"><strong>${escapeHtml(item.symbol)}</strong>${marketSymbolMetaHtml(item)}</div></td>
           <td><strong>${formatNumber(item.current_price, 6)}</strong></td>
           <td><span class="signal decision-wait">Analyse indisponible</span></td>
           <td>-</td>
@@ -694,7 +697,7 @@ function renderRows(rows) {
           <td><span class="badge invalid">Indisponible</span></td>
           <td>-</td>
           <td>-</td>
-          <td><span class="summary" title="${item.error}">${item.error}</span>${marketActionsHtml(item)}</td>
+          <td><span class="summary" title="${escapeHtml(item.error)}">${escapeHtml(item.error)}</span>${marketActionsHtml(item)}</td>
         </tr>
       `;
     }
@@ -705,17 +708,17 @@ function renderRows(rows) {
     const quality = item.setup_quality ?? item.risk_reward?.quality ?? "-";
 
     return `
-      <tr data-row-index="${index}" style="cursor: pointer;">
-        <td><div class="symbol-cell"><strong>${item.symbol}</strong>${marketSymbolMetaHtml(item)}</div></td>
+      <tr data-row-index="${index}" class="clickable-row">
+        <td><div class="symbol-cell"><strong>${escapeHtml(item.symbol)}</strong>${marketSymbolMetaHtml(item)}</div></td>
         <td><strong>${formatNumber(item.current_price, 6)}</strong></td>
-        <td><span class="signal ${decisionClass(decision.decision)}">${decision.decision_label ?? "-"}</span></td>
-        <td><strong>${decision.confidence ?? "-"}</strong><span style="font-size:11px; color:var(--muted)">/100</span></td>
-        <td><span class="trend-badge ${trendClass(trend)}">${trend.replace('_', ' ')}</span></td>
-        <td><span class="badge ${qualityClass(quality)}">${quality}</span></td>
-        <td>${triggerDecisionLabel(decision)}</td>
-        <td><strong>${item.global_score ?? "-"}</strong></td>
+        <td><span class="signal ${decisionClass(decision.decision)}">${escapeHtml(decision.decision_label ?? "-")}</span></td>
+        <td><strong>${escapeHtml(decision.confidence ?? "-")}</strong><span class="score-unit">/100</span></td>
+        <td><span class="trend-badge ${trendClass(trend)}">${escapeHtml(String(trend).replace('_', ' '))}</span></td>
+        <td><span class="badge ${qualityClass(quality)}">${escapeHtml(quality)}</span></td>
+        <td>${escapeHtml(triggerDecisionLabel(decision))}</td>
+        <td><strong>${escapeHtml(item.global_score ?? "-")}</strong></td>
         <td>
-          <span class="summary" title="${rawMainBlockingFactor(item)}">${mainBlockingFactor(item)}</span>
+          <span class="summary" title="${escapeHtml(rawMainBlockingFactor(item))}">${escapeHtml(mainBlockingFactor(item))}</span>
           ${marketActionsHtml(item)}
         </td>
       </tr>
@@ -748,6 +751,10 @@ function alertTypeLabel(type) {
   }[type] ?? type;
 }
 
+function alertCssToken(value, allowed, fallback) {
+  return allowed.includes(value) ? value.toLowerCase() : fallback;
+}
+
 function renderAiAlerts(payload) {
   if (!aiAlertsList) return;
   const alerts = payload.alerts ?? [];
@@ -756,26 +763,26 @@ function renderAiAlerts(payload) {
     return;
   }
   aiAlertsList.innerHTML = alerts.map((alert) => `
-    <button type="button" class="ai-alert-card ai-${String(alert.type).toLowerCase()} severity-${String(alert.severity).toLowerCase()}" ${alert.symbol ? `data-decision-symbol="${alert.symbol}"` : ""}>
+    <button type="button" class="ai-alert-card ai-${alertCssToken(alert.type, ["OPPORTUNITY", "WATCH", "RISK", "MARKET"], "market")} severity-${alertCssToken(alert.severity, ["LOW", "MEDIUM", "HIGH", "CRITICAL"], "low")}" ${alert.symbol ? `data-decision-symbol="${escapeHtml(alert.symbol)}"` : ""}>
       <div>
-        <span class="ai-alert-type">${alertTypeLabel(alert.type)}</span>
-        <strong>${alert.title}</strong>
-        <small>${alert.symbol ?? "Marché global"} · ${alert.confidence ?? "-"} / 100</small>
+        <span class="ai-alert-type">${escapeHtml(alertTypeLabel(alert.type))}</span>
+        <strong>${escapeHtml(alert.title)}</strong>
+        <small>${escapeHtml(alert.symbol ?? "Marché global")} · ${escapeHtml(alert.confidence ?? "-")} / 100</small>
       </div>
-      <p>${shortText(alert.message, 130)}</p>
+      <p>${escapeHtml(shortText(alert.message, 130))}</p>
     </button>
   `).join("");
 }
 
 async function renderScoreEvolution(symbol) {
-  const payload = await apiFetch(`/api/score-history/${symbol}?limit=12`);
+  const payload = await apiFetch(`/api/score-history/${encodeURIComponent(String(symbol))}?limit=12`);
   return `
     <div class="detail-box">
       <h3>Evolution V5</h3>
       ${sparklineSvg(payload.history)}
       <div class="kv-grid compact">
-        <span>Tendance :</span><strong>${payload.trend}</strong>
-        <span>Acceleration :</span><strong>${payload.acceleration}</strong>
+        <span>Tendance :</span><strong>${escapeHtml(payload.trend)}</strong>
+        <span>Acceleration :</span><strong>${escapeHtml(payload.acceleration)}</strong>
       </div>
     </div>
   `;
@@ -783,7 +790,7 @@ async function renderScoreEvolution(symbol) {
 
 function factorChips(factors) {
   const items = factors?.length ? factors : ["-"];
-  return items.slice(0, 4).map((factor) => `<span>${shortText(decisionFactorLabel(factor), 36)}</span>`).join("");
+  return items.slice(0, 4).map((factor) => `<span>${escapeHtml(shortText(decisionFactorLabel(factor), 36))}</span>`).join("");
 }
 
 function renderMobileCards(rows) {
@@ -794,11 +801,11 @@ function renderMobileCards(rows) {
       return `
         <article class="market-card error-card">
           <div class="market-card-head">
-            <strong>${item.symbol}</strong>
+            <strong>${escapeHtml(item.symbol)}</strong>
             <span class="badge invalid">Analyse indisponible</span>
           </div>
           ${marketSymbolMetaHtml(item)}
-          <p>${shortText(item.error, 90)}</p>
+          <p>${escapeHtml(shortText(item.error, 90))}</p>
         </article>
       `;
     }
@@ -811,34 +818,34 @@ function renderMobileCards(rows) {
     const symbolMeta = marketSymbolMetaHtml(item);
 
     return `
-      <article class="market-card ${expanded ? "open" : ""}" data-mobile-card="${item.symbol}">
-        <button type="button" class="market-card-toggle" data-mobile-toggle="${item.symbol}" aria-expanded="${expanded}">
+      <article class="market-card ${expanded ? "open" : ""}" data-mobile-card="${escapeHtml(item.symbol)}">
+        <button type="button" class="market-card-toggle" data-mobile-toggle="${escapeHtml(item.symbol)}" aria-expanded="${expanded}">
           <div class="market-card-head">
-            <strong>${item.symbol}</strong>
-            <span class="signal ${decisionClass(decision.decision)}">${decision.decision_label ?? "-"}</span>
+            <strong>${escapeHtml(item.symbol)}</strong>
+            <span class="signal ${decisionClass(decision.decision)}">${escapeHtml(decision.decision_label ?? "-")}</span>
           </div>
           ${symbolMeta}
           <div class="market-card-badges">
-            <span class="badge neutral">Confiance ${decision.confidence ?? "-"}</span>
-            <span class="trend-badge ${trendClass(trend)}">${String(trend).replace("_", " ")}</span>
+            <span class="badge neutral">Confiance ${escapeHtml(decision.confidence ?? "-")}</span>
+            <span class="trend-badge ${trendClass(trend)}">${escapeHtml(String(trend).replace("_", " "))}</span>
           </div>
           <div class="market-card-grid">
             <span>Prix</span><strong>${formatNumber(item.current_price, 6)}</strong>
-            <span>Setup</span><strong><span class="badge ${qualityClass(setupQuality)}">${setupQuality}</span></strong>
-            <span>Timing technique</span><strong>${triggerDecisionLabel(decision)}</strong>
-            <span>Blocage</span><strong>${shortText(blocking, 28)}</strong>
+            <span>Setup</span><strong><span class="badge ${qualityClass(setupQuality)}">${escapeHtml(setupQuality)}</span></strong>
+            <span>Timing technique</span><strong>${escapeHtml(triggerDecisionLabel(decision))}</strong>
+            <span>Blocage</span><strong>${escapeHtml(shortText(blocking, 28))}</strong>
           </div>
         </button>
         <div class="market-card-details">
           <div class="mobile-tf-grid">
-            <span>15m <strong>${timeframeScore(item, "15m")}</strong></span>
-            <span>1h <strong>${timeframeScore(item, "1h")}</strong></span>
-            <span>4h <strong>${timeframeScore(item, "4h")}</strong></span>
-            <span>1d <strong>${timeframeScore(item, "1d")}</strong></span>
+            <span>15m <strong>${escapeHtml(timeframeScore(item, "15m"))}</strong></span>
+            <span>1h <strong>${escapeHtml(timeframeScore(item, "1h"))}</strong></span>
+            <span>4h <strong>${escapeHtml(timeframeScore(item, "4h"))}</strong></span>
+            <span>1d <strong>${escapeHtml(timeframeScore(item, "1d"))}</strong></span>
           </div>
           <div class="market-card-grid compact">
             <span>RR</span><strong>${formatNumber(item.risk_reward?.ratio, 2)}</strong>
-            <span>Momentum</span><strong class="${momentumClass(item)}">${shortText(momentumText(item), 24)}</strong>
+            <span>Momentum</span><strong class="${momentumClass(item)}">${escapeHtml(shortText(momentumText(item), 24))}</strong>
             <span>Support</span><strong>${formatNumber(item.support, 6)}</strong>
             <span>Resistance</span><strong>${formatNumber(item.resistance, 6)}</strong>
           </div>
@@ -878,7 +885,7 @@ function renderDetail(item) {
         </div>
         <div class="detail-box">
           <h3>Analyse</h3>
-          <p>${item.error}</p>
+          <p>${escapeHtml(item.error)}</p>
           <p class="muted">Cette position reste visible dans le cockpit, mais aucune donnee Binance exploitable n'est disponible pour ce symbole.</p>
           <div class="detail-actions">${marketActionsHtml(item, true)}</div>
         </div>
@@ -905,7 +912,7 @@ function renderDetail(item) {
     <div class="detail-box portfolio-box">
       <h3>Portefeuille</h3>
       <div class="kv-grid compact portfolio-grid">
-        <span>Source :</span><strong>${sourceLabel}</strong>
+        <span>Source :</span><strong>${escapeHtml(sourceLabel)}</strong>
         <span>Quantité :</span><strong>${formatNumber(position.quantity, 6)}</strong>
         <span>Prix moyen :</span><strong>${formatNumber(position.average_buy_price, 6)}</strong>
         <span>Valeur actuelle :</span><strong>${formatNumber(position.current_value, 2)} USDC</strong>
@@ -933,34 +940,34 @@ function renderDetail(item) {
       <div class="detail-box decision-box">
         <h3>Décision</h3>
         <div class="decision-metrics">
-          <span class="signal ${decisionClass(decision.decision)}">${decision.decision_label ?? "-"}</span>
-          <span class="badge neutral">Confiance ${decision.confidence ?? "-"}</span>
-          <span class="badge neutral">Score ${item.global_score ?? "-"}</span>
-          <span class="trend-badge ${trendClass(trend)}">${trend}</span>
+          <span class="signal ${decisionClass(decision.decision)}">${escapeHtml(decision.decision_label ?? "-")}</span>
+          <span class="badge neutral">Confiance ${escapeHtml(decision.confidence ?? "-")}</span>
+          <span class="badge neutral">Score ${escapeHtml(item.global_score ?? "-")}</span>
+          <span class="trend-badge ${trendClass(trend)}">${escapeHtml(trend)}</span>
         </div>
         <div class="kv-grid compact decision-kv">
-          <span>Blocage principal :</span><strong title="${mainBlocker}">${shortText(mainBlocker, 34)}</strong>
-          <span>Timing technique :</span><strong>${triggerDecisionLabel(decision)}</strong>
+          <span>Blocage principal :</span><strong title="${escapeHtml(mainBlocker)}">${escapeHtml(shortText(mainBlocker, 34))}</strong>
+          <span>Timing technique :</span><strong>${escapeHtml(triggerDecisionLabel(decision))}</strong>
           <span>Entree autorisee :</span><strong>${decision.timing_is_actionable === true && decision.decision === "BUY_READY" ? "Oui" : "Non"}</strong>
-          <span>Action timing :</span><strong>${decision.timing_action ?? "-"}</strong>
-          <span>Setup :</span><strong><span class="badge ${qualityClass(setupQuality)}">${setupQuality}</span></strong>
-          <span>Signal actuel :</span><strong><span class="signal ${signalClass(signal)}">${signal}</span></strong>
+          <span>Action timing :</span><strong>${escapeHtml(decision.timing_action ?? "-")}</strong>
+          <span>Setup :</span><strong><span class="badge ${qualityClass(setupQuality)}">${escapeHtml(setupQuality)}</span></strong>
+          <span>Signal actuel :</span><strong><span class="signal ${signalClass(signal)}">${escapeHtml(signal)}</span></strong>
         </div>
-        <p class="decision-summary">${decisionSummaryLabel(decision.reason_summary) ?? shortDecisionSummary(item)}</p>
-        <p class="decision-summary muted-summary">${decision.timing_reason ?? ""}</p>
-        <p class="decision-summary muted-summary">${marketContextText(item)}</p>
+        <p class="decision-summary">${escapeHtml(decisionSummaryLabel(decision.reason_summary) ?? shortDecisionSummary(item))}</p>
+        <p class="decision-summary muted-summary">${escapeHtml(decision.timing_reason ?? "")}</p>
+        <p class="decision-summary muted-summary">${escapeHtml(marketContextText(item))}</p>
         <div class="factor-list inline-factors">
           <strong>Positifs</strong>
-          ${(decision.positive_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${decisionFactorLabel(factor)}</span>`).join("")}
+          ${(decision.positive_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${escapeHtml(decisionFactorLabel(factor))}</span>`).join("")}
         </div>
         <div class="factor-list inline-factors">
           <strong>Bloquants</strong>
-          ${(decision.blocking_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${decisionFactorLabel(factor)}</span>`).join("")}
+          ${(decision.blocking_factors ?? ["-"]).slice(0, 4).map((factor) => `<span>${escapeHtml(decisionFactorLabel(factor))}</span>`).join("")}
         </div>
         <div class="detail-actions">
-          <button type="button" class="quick-journal" data-symbol="${item.symbol}">Note journal</button>
-          <button type="button" data-add-watch-symbol="${item.symbol}">Ajouter surveillance</button>
-          <button type="button" data-add-position-symbol="${item.symbol}">Position manuelle</button>
+          <button type="button" class="quick-journal" data-symbol="${escapeHtml(item.symbol)}">Note journal</button>
+          <button type="button" data-add-watch-symbol="${escapeHtml(item.symbol)}">Ajouter surveillance</button>
+          <button type="button" data-add-position-symbol="${escapeHtml(item.symbol)}">Position manuelle</button>
           ${marketActionsHtml(item, true)}
         </div>
       </div>
@@ -977,34 +984,34 @@ function renderDetail(item) {
       </div>
       <div class="quality-line">
         <span>Qualité R:R :</span>
-        <span class="badge ${qualityClass(riskQuality)}">${riskQuality}</span>
+        <span class="badge ${qualityClass(riskQuality)}">${escapeHtml(riskQuality)}</span>
       </div>
     </div>
     <div class="detail-box">
       <h3>Timing marché</h3>
       <div class="tf-grid">
-        <span>15m <strong>${timeframeScore(item, "15m")}</strong></span>
-        <span>1h <strong>${timeframeScore(item, "1h")}</strong></span>
-        <span>4h <strong>${timeframeScore(item, "4h")}</strong></span>
-        <span>1d <strong>${timeframeScore(item, "1d")}</strong></span>
+        <span>15m <strong>${escapeHtml(timeframeScore(item, "15m"))}</strong></span>
+        <span>1h <strong>${escapeHtml(timeframeScore(item, "1h"))}</strong></span>
+        <span>4h <strong>${escapeHtml(timeframeScore(item, "4h"))}</strong></span>
+        <span>1d <strong>${escapeHtml(timeframeScore(item, "1d"))}</strong></span>
       </div>
       <div class="kv-grid compact detail-metrics-grid">
         <span>RSI :</span><strong>${formatNumber(rsi1h, 2)}</strong>
-        <span>Momentum :</span><strong class="${momentumClass(item)}">${momentumText(item)}</strong>
-        <span>Trend strength :</span><strong>${trendStrength?.trend ?? trend} ${trendStrength?.score ?? ""}</strong>
-        <span>Pattern :</span><strong>${mainPattern(item)}</strong>
-        <span>Volume :</span><strong>${volumeAccelText(item)}</strong>
+        <span>Momentum :</span><strong class="${momentumClass(item)}">${escapeHtml(momentumText(item))}</strong>
+        <span>Trend strength :</span><strong>${escapeHtml(trendStrength?.trend ?? trend)} ${escapeHtml(trendStrength?.score ?? "")}</strong>
+        <span>Pattern :</span><strong>${escapeHtml(mainPattern(item))}</strong>
+        <span>Volume :</span><strong>${escapeHtml(volumeAccelText(item))}</strong>
       </div>
     </div>
     <div class="detail-box">
       <h3>Scores techniques</h3>
       <div class="score-grid">
-        <span>Context <strong>${decision.context_score ?? "-"}</strong></span>
-        <span>Setup <strong>${decision.setup_score ?? "-"}</strong></span>
-        <span>Trigger <strong>${decision.trigger_score ?? "-"}</strong></span>
-        <span>Risk <strong>${decision.risk_score ?? "-"}</strong></span>
-        <span>Market <strong>${decision.market_score ?? "-"}</strong></span>
-        <span>Global <strong>${item.global_score ?? "-"}</strong></span>
+        <span>Context <strong>${escapeHtml(decision.context_score ?? "-")}</strong></span>
+        <span>Setup <strong>${escapeHtml(decision.setup_score ?? "-")}</strong></span>
+        <span>Trigger <strong>${escapeHtml(decision.trigger_score ?? "-")}</strong></span>
+        <span>Risk <strong>${escapeHtml(decision.risk_score ?? "-")}</strong></span>
+        <span>Market <strong>${escapeHtml(decision.market_score ?? "-")}</strong></span>
+        <span>Global <strong>${escapeHtml(item.global_score ?? "-")}</strong></span>
       </div>
     </div>
   `;
@@ -1064,20 +1071,20 @@ function renderPositions(positions) {
   }
   positionsBody.innerHTML = visiblePositions.map((position, index) => `
     <tr>
-      <td><strong>${position.symbol}</strong></td>
+      <td><strong>${escapeHtml(position.symbol)}</strong></td>
       <td>${renderMarketSourceBadge(position.market_source ?? position.source)}</td>
-      <td><span class="badge ${position.status === "ACTIVE" ? "good" : position.status === "DUST" ? "medium" : "neutral"}">${position.status ?? "-"}</span></td>
+      <td><span class="badge ${position.status === "ACTIVE" ? "good" : position.status === "DUST" ? "medium" : "neutral"}">${escapeHtml(position.status ?? "-")}</span></td>
       <td>${formatNumber(position.quantity, 6)}</td>
       <td>${formatNumber(position.average_buy_price, 6)}</td>
       <td class="${position.gain_loss_pct >= 0 ? "momentum-bullish" : "momentum-bearish"}"><strong>${formatNumber(position.gain_loss_pct, 2)}%</strong></td>
       <td>${formatNumber(position.take_profit_1, 6)}</td>
       <td>${formatNumber(position.take_profit_2, 6)}</td>
       <td>${formatNumber(position.stop_loss, 6)}</td>
-      <td><strong>${position.trend_score ?? "-"}</strong></td>
+      <td><strong>${escapeHtml(position.trend_score ?? "-")}</strong></td>
       <td class="row-actions">
-        <button type="button" data-edit-position="${index}" style="height:26px; padding:0 8px; font-size:11px;">Éditer</button>
-        <button type="button" data-journal-symbol="${position.symbol}" style="height:26px; padding:0 8px; font-size:11px;">Journal</button>
-        <button type="button" data-delete-position="${position.id}" style="height:26px; padding:0 8px; font-size:11px; background:var(--sell-bg); color:var(--sell); border-color:transparent;">Suppr.</button>
+        <button type="button" data-edit-position="${index}" class="compact-action">Éditer</button>
+        <button type="button" data-journal-symbol="${escapeHtml(position.symbol)}" class="compact-action">Journal</button>
+        <button type="button" data-delete-position="${escapeHtml(position.id)}" class="compact-action danger-action">Suppr.</button>
       </td>
     </tr>
   `).join("");
@@ -1098,18 +1105,18 @@ function renderWatchCandidates(candidates) {
   }
   watchBody.innerHTML = candidates.map((candidate, index) => `
     <tr>
-      <td><strong>${candidate.symbol}</strong></td>
+      <td><strong>${escapeHtml(candidate.symbol)}</strong></td>
       <td>${formatNumber(candidate.current_price, 6)}</td>
       <td>${formatNumber(candidate.target_buy_price, 6)}</td>
       <td>${formatNumber(candidate.invalidation_price, 6)}</td>
-      <td><span class="badge ${candidate.priority === "HIGH" ? "bad" : candidate.priority === "LOW" ? "neutral" : "medium"}">${candidate.priority ?? "-"}</span></td>
-      <td>${candidate.signal ?? "-"}</td>
-      <td><strong>${candidate.score ?? "-"}</strong></td>
+      <td><span class="badge ${candidate.priority === "HIGH" ? "bad" : candidate.priority === "LOW" ? "neutral" : "medium"}">${escapeHtml(candidate.priority ?? "-")}</span></td>
+      <td>${escapeHtml(candidate.signal ?? "-")}</td>
+      <td><strong>${escapeHtml(candidate.score ?? "-")}</strong></td>
       <td class="row-actions">
-        <button type="button" data-view-market-symbol="${candidate.symbol}" style="height:26px; padding:0 8px; font-size:11px;">Analyser</button>
-        <button type="button" data-edit-watch="${index}" style="height:26px; padding:0 8px; font-size:11px;">Éditer</button>
-        <button type="button" data-journal-symbol="${candidate.symbol}" style="height:26px; padding:0 8px; font-size:11px;">Journal</button>
-        <button type="button" data-delete-watch="${candidate.id}" class="danger-action" style="height:26px; padding:0 8px; font-size:11px;">Retirer</button>
+        <button type="button" data-view-market-symbol="${escapeHtml(candidate.symbol)}" class="compact-action">Analyser</button>
+        <button type="button" data-edit-watch="${index}" class="compact-action">Éditer</button>
+        <button type="button" data-journal-symbol="${escapeHtml(candidate.symbol)}" class="compact-action">Journal</button>
+        <button type="button" data-delete-watch="${escapeHtml(candidate.id)}" class="danger-action compact-action">Retirer</button>
       </td>
     </tr>
   `).join("");
@@ -1228,7 +1235,7 @@ function renderJournalStats(analytics) {
     <div class="journal-stat-card">
       <span>Winrate</span>
       <strong>${formatNumber(winrate.winrate, 2)}%</strong>
-      <small>${winrate.closed_trades ?? 0} trades clôturés</small>
+      <small>${escapeHtml(winrate.closed_trades ?? 0)} trades clôturés</small>
     </div>
     <div class="journal-stat-card">
       <span>Gain moyen</span>
@@ -1290,27 +1297,27 @@ function renderJournal(entries, analytics = latestJournalAnalytics) {
   journalList.innerHTML = visibleEntries.map((entry) => {
     const pnlClass = Number(entry.pnl_percent) > 0 ? "pnl-positive" : Number(entry.pnl_percent) < 0 ? "pnl-negative" : "pnl-neutral";
     return `
-    <div class="journal-entry" data-journal-entry="${entry.id}">
+    <div class="journal-entry" data-journal-entry="${escapeHtml(entry.id)}">
       <div class="journal-row-main">
         <div class="journal-symbol">
           <strong>${escapeHtml(entry.symbol)}</strong>
           <small>${formatDateTime(entry.created_at)}</small>
         </div>
-        <span class="badge neutral">${journalLabel(entry.decision_type)}</span>
-        <span class="badge medium">${journalLabel(entry.emotion)}</span>
+        <span class="badge neutral">${escapeHtml(journalLabel(entry.decision_type))}</span>
+        <span class="badge medium">${escapeHtml(journalLabel(entry.emotion))}</span>
         <span>${formatNumber(entry.confidence, 0)}%</span>
         <span>${formatNumber(entry.ai_score, 0)}</span>
-        <strong class="${journalResultClass(entry.result_status)}">${journalLabel(entry.result_status)}</strong>
+        <strong class="${journalResultClass(entry.result_status)}">${escapeHtml(journalLabel(entry.result_status))}</strong>
         <strong class="${pnlClass}">${formatNumber(entry.pnl_percent, 2)}%</strong>
         <div class="journal-actions">
-          <button type="button" data-toggle-journal="${entry.id}">Détail</button>
-          <button type="button" data-close-journal="${entry.id}" data-result="WIN">Win</button>
-          <button type="button" data-close-journal="${entry.id}" data-result="LOSS">Loss</button>
-          <button type="button" data-delete-journal="${entry.id}">Supprimer</button>
+          <button type="button" data-toggle-journal="${escapeHtml(entry.id)}">Détail</button>
+          <button type="button" data-close-journal="${escapeHtml(entry.id)}" data-result="WIN">Win</button>
+          <button type="button" data-close-journal="${escapeHtml(entry.id)}" data-result="LOSS">Loss</button>
+          <button type="button" data-delete-journal="${escapeHtml(entry.id)}">Supprimer</button>
         </div>
       </div>
       <div class="journal-row-note">${escapeHtml(entry.reason || entry.notes || "")}</div>
-      <div class="journal-entry-detail" id="journalDetail${entry.id}" hidden>
+      <div class="journal-entry-detail" id="journalDetail${escapeHtml(entry.id)}" hidden>
         <div class="journal-detail-grid">
           <div>
             <h4>Replay IA</h4>
@@ -1319,7 +1326,7 @@ function renderJournal(entries, analytics = latestJournalAnalytics) {
           <div>
             <h4>Résultat utilisateur</h4>
             <div class="kv-grid compact">
-              <span>Type</span><strong>${journalLabel(entry.trade_type)}</strong>
+              <span>Type</span><strong>${escapeHtml(journalLabel(entry.trade_type))}</strong>
               <span>Source</span><strong>${marketSourceLabel(entry.market_source)}</strong>
               <span>PnL USDC</span><strong class="${pnlClass}">${formatNumber(entry.pnl_usdc, 2)}</strong>
               <span>Durée</span><strong>${formatNumber(entry.duration_minutes, 0)} min</strong>
@@ -1340,7 +1347,7 @@ async function loadMarket(force = false) {
   const symbol = symbolInput?.value?.trim().toUpperCase() || "BTCUSDC";
 
   if (mode === "symbol") {
-    const payload = await apiFetch(`/api/analyze-multi/${symbol}`);
+    const payload = await apiFetch(`/api/analyze-multi/${encodeURIComponent(String(symbol))}`);
     renderRows(await enrichWithHistory([payload]));
     return;
   }
@@ -1470,7 +1477,7 @@ async function removeWatchFromMarket(candidateId, setFeedback = setMarketFeedbac
   if (!confirmed) return;
   setFeedback("Retrait de la surveillance...", "loading");
   try {
-    await apiFetch(`/api/watch-candidates/${candidateId}`, { method: "DELETE" });
+    await apiFetch(`/api/watch-candidates/${encodeURIComponent(String(candidateId))}`, { method: "DELETE" });
   } catch (error) {
     setFeedback(`Impossible de retirer la surveillance : ${error.message}`, "error");
     return;
@@ -1489,7 +1496,7 @@ async function deleteManualPositionFromMarket(positionId) {
   if (!confirmed) return;
   setMarketFeedback("Suppression de la position...", "loading");
   try {
-    await apiFetch(`/api/positions/${positionId}`, { method: "DELETE" });
+    await apiFetch(`/api/positions/${encodeURIComponent(String(positionId))}`, { method: "DELETE" });
     setMarketFeedback("Position manuelle supprimée.", "success");
     await refreshMarketCockpit();
   } catch (error) {
@@ -1778,7 +1785,7 @@ positionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const payload = formToPayload(positionForm);
   const id = positionForm.elements.id.value;
-  await apiFetch(id ? `/api/positions/${id}` : "/api/positions", {
+  await apiFetch(id ? `/api/positions/${encodeURIComponent(String(id))}` : "/api/positions", {
     method: id ? "PUT" : "POST",
     body: JSON.stringify(payload),
   });
@@ -1804,7 +1811,7 @@ positionsBody.addEventListener("click", async (event) => {
   if (deleteButton) {
     const confirmed = window.confirm("Supprimer cette position manuelle ?");
     if (!confirmed) return;
-    await apiFetch(`/api/positions/${deleteButton.dataset.deletePosition}`, { method: "DELETE" });
+    await apiFetch(`/api/positions/${encodeURIComponent(String(deleteButton.dataset.deletePosition))}`, { method: "DELETE" });
     await loadPersonalData();
   }
   if (journalButton) await createQuickJournal(journalButton.dataset.journalSymbol);
@@ -1818,7 +1825,7 @@ watchForm.addEventListener("submit", async (event) => {
   submitButton.disabled = true;
   setWatchFeedback(id ? "Modification en cours..." : "Ajout en cours...", "loading");
   try {
-    await apiFetch(id ? `/api/watch-candidates/${id}` : "/api/watch-candidates", {
+    await apiFetch(id ? `/api/watch-candidates/${encodeURIComponent(String(id))}` : "/api/watch-candidates", {
       method: id ? "PUT" : "POST",
       body: JSON.stringify(payload),
     });
@@ -1885,13 +1892,13 @@ journalList.addEventListener("click", async (event) => {
   }
   const toggleButton = event.target.closest("[data-toggle-journal]");
   if (toggleButton) {
-    const detail = document.querySelector(`#journalDetail${toggleButton.dataset.toggleJournal}`);
+    const detail = document.getElementById(`journalDetail${toggleButton.dataset.toggleJournal}`);
     if (detail) detail.hidden = !detail.hidden;
     return;
   }
   const closeButton = event.target.closest("[data-close-journal]");
   if (closeButton) {
-    await apiFetch(`/api/journal/${closeButton.dataset.closeJournal}`, {
+    await apiFetch(`/api/journal/${encodeURIComponent(String(closeButton.dataset.closeJournal))}`, {
       method: "PUT",
       body: JSON.stringify({ result_status: closeButton.dataset.result }),
     });
@@ -1906,7 +1913,7 @@ journalList.addEventListener("click", async (event) => {
   if (!deleteButton) return;
   const confirmed = window.confirm("Supprimer cette entrée de journal ?");
   if (!confirmed) return;
-  await apiFetch(`/api/journal/${deleteButton.dataset.deleteJournal}`, { method: "DELETE" });
+  await apiFetch(`/api/journal/${encodeURIComponent(String(deleteButton.dataset.deleteJournal))}`, { method: "DELETE" });
   const [journal, analytics] = await Promise.all([
     apiFetch("/api/journal"),
     apiFetch("/api/journal/analytics"),
