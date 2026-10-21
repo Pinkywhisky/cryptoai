@@ -14,8 +14,13 @@ class BalanceClient:
     def get_non_zero_balances(self):
         return self._balances
 
-    def get_my_trades(self, symbol):
-        return self._trades
+    def get_my_trades(self, symbol, *, from_id=0, limit=1000):
+        target = (self._balances[0]["asset"] if self._balances else "DOGE") + "USDC"
+        return [trade for trade in self._trades if symbol == target and trade["id"] >= from_id][:limit]
+
+    def get_spot_markets(self):
+        assets = {"DOGE"} | {row["asset"] for row in self._balances if row["asset"] != "MORPHO"}
+        return [{"symbol":asset+"USDC","base_asset":asset,"quote_asset":"USDC"} for asset in sorted(assets)]
 
 
 def _insert_trade(db_path, symbol="DOGEUSDC", trade_id=1):
@@ -47,7 +52,10 @@ def test_trade_history_without_balance_does_not_create_active_position(tmp_path,
 
     assert result["positions"] == []
     assert binance_sync.get_binance_positions(db_path=db_path) == []
-    assert binance_sync.get_closed_trade_symbols(db_path=db_path) == [{"symbol": "DOGEUSDC"}]
+    # An unsold historical buy followed by zero balance is a possible withdrawal,
+    # not evidence of a full sale.
+    assert binance_sync.get_closed_trade_symbols(db_path=db_path) == []
+    assert binance_sync.get_inactive_positions(db_path=db_path)[0]["status"] == "INACTIVE"
 
 
 def test_positive_balance_creates_active_position(tmp_path, monkeypatch):
@@ -82,6 +90,7 @@ def test_positive_balance_creates_active_position(tmp_path, monkeypatch):
 
 
 def test_alpha_balance_creates_active_position_without_spot_symbol(tmp_path, monkeypatch):
+    monkeypatch.setattr(binance_sync, "get_current_price", lambda symbol: None)
     db_path = tmp_path / "history.db"
     monkeypatch.setattr(binance_sync, "symbol_exists", lambda symbol: False)
     monkeypatch.setattr(
@@ -100,6 +109,7 @@ def test_alpha_balance_creates_active_position_without_spot_symbol(tmp_path, mon
             "valid": True,
             "symbol": "MORPHO",
             "current_price": 1.01,
+            "quote_asset": "USDC",  # Explicit synthetic financial quote.
             "market_source": "BINANCE_ALPHA",
             "price_change_pct": -4.5,
             "quote_volume": 433000,
@@ -187,7 +197,7 @@ def test_value_100_usdc_is_active(tmp_path, monkeypatch):
     assert active[0]["current_value"] == 1
 
 
-def test_cleanup_marks_old_binance_position_inactive(tmp_path):
+def test_cleanup_cannot_close_from_list_absence(tmp_path):
     db_path = tmp_path / "history.db"
     init_db(db_path)
     with sqlite3.connect(db_path) as connection:
@@ -204,13 +214,44 @@ def test_cleanup_marks_old_binance_position_inactive(tmp_path):
 
     binance_sync.cleanup_inactive_binance_positions([], db_path=db_path)
 
-    inactive = binance_sync.get_inactive_positions(db_path=db_path)
-    assert inactive[0]["symbol"] == "DOGEUSDC"
-    assert inactive[0]["is_active"] == 0
-    assert inactive[0]["status"] == "CLOSED"
+    assert binance_sync.get_inactive_positions(db_path=db_path) == []
+    active = binance_sync.get_binance_positions(db_path=db_path)
+    assert active[0]["symbol"] == "DOGEUSDC"
+    assert active[0]["is_active"] == 1
+    assert active[0]["status"] == "ACTIVE"
+    assert active[0]["data_status"] == "TEMPORARILY_UNAVAILABLE"
 
 
-def test_pnl_summary_excludes_inactive_positions(tmp_path):
+
+
+def _verified_synthetic_snapshots(db_path):
+    """Give aggregate-only fixtures explicit independently specified provenance."""
+    import json
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        for row in connection.execute("SELECT * FROM positions").fetchall():
+            values = {
+                "remaining_quantity":row["quantity"],
+                "average_remaining_cost":row["average_buy_price"],
+                "invested_remaining":row["invested_amount"],
+                "current_price":row["current_price"],
+                "current_value":row["current_value"],
+                "realized_pnl":row["realized_pnl"],
+                "known_realized_pnl":row["realized_pnl"],
+                "unrealized_pnl":row["unrealized_pnl"],
+                "total_pnl":row["total_pnl"],
+                "unrealized_pnl_pct":row["profit_loss_pct"],
+            }
+            payload={**values,"decimal_values":{key:str(value) if value is not None else None for key,value in values.items()},"issues":[]}
+            connection.execute("""UPDATE positions SET data_status='VALID',
+                history_status='COMPLETE',cost_basis_status='EXACT',price_status='EXACT',
+                pnl_status='EXACT',realized_pnl_status='EXACT',accounting_json=? WHERE id=?""",
+                (json.dumps(payload),row["id"]))
+        connection.execute("""INSERT INTO exchange_sync_state(exchange,last_sync,last_attempt,sync_status,discovery_status)
+            VALUES('BINANCE_SPOT','synthetic','synthetic','COMPLETE','COMPLETE')""")
+
+
+def test_pnl_summary_preserves_closed_and_dust_realized(tmp_path):
     db_path = tmp_path / "history.db"
     init_db(db_path)
     with sqlite3.connect(db_path) as connection:
@@ -231,7 +272,7 @@ def test_pnl_summary_excludes_inactive_positions(tmp_path):
                 current_value, realized_pnl, unrealized_pnl, total_pnl,
                 source, synced_from_binance, is_active, status, created_at, updated_at
             )
-            VALUES ('ETHUSDC', 1, 100, 100, 0, 50, 0, 50, 'BINANCE', 1, 0, 'CLOSED', 'now', 'now')
+            VALUES ('ETHUSDC', 0, 0, 0, 0, 50, 0, 50, 'BINANCE', 1, 0, 'CLOSED', 'now', 'now')
             """
         )
         connection.execute(
@@ -241,7 +282,7 @@ def test_pnl_summary_excludes_inactive_positions(tmp_path):
                 current_value, realized_pnl, unrealized_pnl, total_pnl,
                 source, synced_from_binance, is_active, status, created_at, updated_at
             )
-            VALUES ('SOLUSDC', 0.001, 100, 0.5, 0.5, 99, 0, 99, 'BINANCE', 1, 0, 'DUST', 'now', 'now')
+            VALUES ('SOLUSDC', 0.005, 100, 0.5, 0.5, 99, 0, 99, 'BINANCE', 1, 0, 'DUST', 'now', 'now')
             """
         )
         connection.execute(
@@ -252,13 +293,14 @@ def test_pnl_summary_excludes_inactive_positions(tmp_path):
         )
         connection.commit()
 
+    _verified_synthetic_snapshots(db_path)
     summary = binance_sync.get_pnl_summary(db_path=db_path)
 
     assert summary["current_value"] == 3
     assert summary["usdc_available"] == 40
-    assert summary["portfolio_value_usdc"] == 43
-    assert summary["realized_pnl"] == 1
-    assert summary["total_pnl"] == 1.5
+    assert summary["portfolio_value_usdc"] == 43.5
+    assert summary["realized_pnl"] == 150
+    assert summary["total_pnl"] == 150.5
     assert summary["inactive_symbols_count"] == 1
     assert summary["dust_count"] == 1
     assert summary["dust_value_usdc"] == 0.5
@@ -300,6 +342,7 @@ def test_pnl_summary_includes_spot_and_alpha_positions(tmp_path):
         )
         connection.commit()
 
+    _verified_synthetic_snapshots(db_path)
     summary = binance_sync.get_pnl_summary(db_path=db_path)
 
     assert summary["current_value"] == 94

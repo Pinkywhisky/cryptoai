@@ -200,6 +200,7 @@ def test_alpha_manual_position_gets_limited_market_price(tmp_path, monkeypatch) 
             "valid": True,
             "symbol": "CKP",
             "current_price": 2,
+            "price_quote_asset": "USDC",  # Explicit synthetic quote.
             "market_source": "BINANCE_ALPHA",
             "analysis_available": False,
             "market_error": "Analyse technique limitée pour les tokens Alpha.",

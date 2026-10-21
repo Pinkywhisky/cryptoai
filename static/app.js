@@ -228,6 +228,45 @@ function formatNumber(value, digits = 2) {
   return Number(value).toLocaleString("fr-FR", { maximumFractionDigits: digits });
 }
 
+function financialNumber(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) return null;
+    // A nonzero decimal below Number's range must not display as zero.
+    if (Number(text) === 0 && /[1-9]/.test(text.split(/[eE]/)[0])) return null;
+  }
+  const result = Number(value);
+  return Number.isFinite(result) ? result : null;
+}
+
+function formatFinancial(value, digits = 2, unavailable = "Indisponible") {
+  const number = financialNumber(value);
+  if (number === null) return unavailable;
+  if (number !== 0 && Math.abs(number) < 10 ** -digits) return number.toExponential(3);
+  return formatNumber(number, digits);
+}
+
+function formatFinancialPercent(value, digits = 2) {
+  if (financialNumber(value) === null) return "Indisponible";
+  return formatFinancial(value, digits) + "%";
+}
+
+function financialClass(value) {
+  const number = financialNumber(value);
+  return number === null ? "pnl-neutral" : number > 0 ? "momentum-bullish" : number < 0 ? "momentum-bearish" : "pnl-neutral";
+}
+
+function financialStatusLabel(position) {
+  const labels = {
+    VALID: "Données valides", CLOSED: "Clôturée", COST_UNKNOWN: "Coût inconnu",
+    HISTORY_INCOMPLETE: "Historique incomplet",
+    TEMPORARILY_UNAVAILABLE: "Données indisponibles",
+    LEGACY_UNVERIFIED: "À vérifier par synchronisation",
+  };
+  return labels[position?.data_status] || (position?.is_estimated ? "Estimé" : "");
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -353,7 +392,7 @@ function historySpark(history) {
 function isActiveMarketPosition(position) {
   if (!position || !position.is_active || Number(position.quantity ?? 0) <= 0) return false;
   if (position.source === "MANUAL") return position.status !== "CLOSED";
-  return position.status === "ACTIVE" && Number(position.current_value ?? 0) >= MIN_ACTIVE_POSITION_VALUE_USDC;
+  return position.status === "ACTIVE" && (position.current_value == null || Number(position.current_value) >= MIN_ACTIVE_POSITION_VALUE_USDC);
 }
 
 function positionForSymbol(symbol) {
@@ -410,9 +449,10 @@ function symbolMetaHtml(symbol) {
   if (position) {
     badges.push(`<span class="badge good">Détenue</span>`);
     badges.push(renderMarketSourceBadge(position.market_source ?? position.source));
-    notes.push(`PM: ${formatNumber(position.average_buy_price, 6)}`);
-    notes.push(`PnL: ${formatNumber(position.profit_loss_pct ?? position.gain_loss_pct, 2)}%`);
-    notes.push(`Réalisé: ${formatNumber(position.realized_pnl, 2)} USDC`);
+    notes.push(`PM: ${formatFinancial(position.average_buy_price, 6, "Coût inconnu")}`);
+    if (financialStatusLabel(position)) notes.push(financialStatusLabel(position));
+    notes.push(`PnL: ${formatFinancialPercent(position.profit_loss_pct ?? position.gain_loss_pct, 2)}`);
+    notes.push(`Réalisé: ${formatFinancial(position.realized_pnl, 2)} USDC`);
     if (position.take_profit_1) notes.push(`TP1: ${formatNumber(position.take_profit_1, 6)}`);
   }
   if (watch) {
@@ -440,8 +480,9 @@ function compactSymbolMetaHtml(symbol) {
 
     badges.push(`<span class="badge good">Détenue</span>`);
     badges.push(renderMarketSourceBadge(position.market_source ?? position.source));
-    notes.push(`PM: ${formatNumber(position.average_buy_price, 6)}`);
-    notes.push(`<span class="${pnlClass}">PnL: ${formatNumber(pnlPct, 2)}%</span>`);
+    notes.push(`PM: ${formatFinancial(position.average_buy_price, 6, "Coût inconnu")}`);
+    if (financialStatusLabel(position)) notes.push(financialStatusLabel(position));
+    notes.push(`<span class="${pnlClass}">PnL: ${formatFinancialPercent(pnlPct, 2)}</span>`);
   }
   if (watch) {
     badges.push(`<span class="badge medium">Surveillance</span>`);
@@ -474,8 +515,9 @@ function marketSymbolMetaHtml(item) {
   if (position) {
     const pnlPct = position.unrealized_pnl_pct;
     const pnlClass = Number(pnlPct) > 0 ? "pnl-positive" : Number(pnlPct) < 0 ? "pnl-negative" : "pnl-neutral";
-    notes.push(`PM: ${formatNumber(position.average_buy_price, 6)}`);
-    notes.push(`<span class="${pnlClass}">PnL: ${formatNumber(pnlPct, 2)}% / ${formatNumber(position.unrealized_pnl, 2)} USDC</span>`);
+    notes.push(`PM: ${formatFinancial(position.average_buy_price, 6, "Coût inconnu")}`);
+    if (financialStatusLabel(position)) notes.push(financialStatusLabel(position));
+    notes.push(`<span class="${pnlClass}">PnL: ${formatFinancialPercent(pnlPct, 2)} / ${formatFinancial(position.unrealized_pnl, 2)} USDC</span>`);
   }
   if (watch) {
     notes.push(`Visé: ${formatNumber(watch.target_buy_price, 6)}`);
@@ -879,8 +921,8 @@ function renderDetail(item) {
           <h3>Portefeuille</h3>
           ${item.position_info ? `
             <div class="detail-kv"><span>Source</span><strong>${marketSourceLabel(item.position_info.market_source ?? item.position_info.source)}</strong></div>
-            <div class="detail-kv"><span>Quantite</span><strong>${formatNumber(item.position_info.quantity, 8)}</strong></div>
-            <div class="detail-kv"><span>Prix moyen</span><strong>${formatNumber(item.position_info.average_buy_price, 6)}</strong></div>
+            <div class="detail-kv"><span>Quantite</span><strong>${formatFinancial(item.position_info.decimal_values?.remaining_quantity ?? item.position_info.quantity, 8)}</strong></div>
+            <div class="detail-kv"><span>Prix moyen</span><strong>${formatFinancial(item.position_info.average_buy_price, 6, "Coût inconnu")}</strong></div>
           ` : `<p>Aucune position active.</p>`}
         </div>
         <div class="detail-box">
@@ -913,12 +955,12 @@ function renderDetail(item) {
       <h3>Portefeuille</h3>
       <div class="kv-grid compact portfolio-grid">
         <span>Source :</span><strong>${escapeHtml(sourceLabel)}</strong>
-        <span>Quantité :</span><strong>${formatNumber(position.quantity, 6)}</strong>
-        <span>Prix moyen :</span><strong>${formatNumber(position.average_buy_price, 6)}</strong>
-        <span>Valeur actuelle :</span><strong>${formatNumber(position.current_value, 2)} USDC</strong>
-        <span>PnL latent % :</span><strong class="${pnlClass}">${formatNumber(pnlPct, 2)}%</strong>
-        <span>PnL latent :</span><strong class="${Number(pnlAmount) >= 0 ? "momentum-bullish" : "momentum-bearish"}">${formatNumber(pnlAmount, 2)} USDC</strong>
-        <span>PnL réalisé :</span><strong>${formatNumber(position.realized_pnl, 2)} USDC</strong>
+        <span>Quantité :</span><strong>${formatFinancial(position.decimal_values?.remaining_quantity ?? position.quantity, 6)}</strong>
+        <span>Prix moyen :</span><strong>${formatFinancial(position.average_buy_price, 6, "Coût inconnu")}</strong>
+        <span>Valeur actuelle :</span><strong>${formatFinancial(position.current_value, 2)} USDC</strong>
+        <span>PnL latent % :</span><strong class="${pnlClass}">${formatFinancialPercent(pnlPct, 2)}</strong>
+        <span>PnL latent :</span><strong class="${financialClass(pnlAmount)}">${formatFinancial(pnlAmount, 2)} USDC</strong>
+        <span>PnL réalisé :</span><strong>${formatFinancial(position.realized_pnl, 2)} USDC</strong>
         <span>TP1 :</span><strong>${formatNumber(position.take_profit_1, 6)}</strong>
         <span>TP2 :</span><strong>${formatNumber(position.take_profit_2, 6)}</strong>
         <span>Stop-loss :</span><strong>${formatNumber(position.stop_loss, 6)}</strong>
@@ -1052,7 +1094,7 @@ function resetForm(form) {
 function renderPositions(positions) {
   const visiblePositions = positions.filter((position) => {
     if (["BINANCE", "MIXED"].includes(position.source)) {
-      return position.status === "ACTIVE" && Number(position.current_value ?? 0) >= MIN_ACTIVE_POSITION_VALUE_USDC;
+      return position.status === "ACTIVE" && (position.current_value == null || Number(position.current_value) >= MIN_ACTIVE_POSITION_VALUE_USDC);
     }
     return position.status !== "CLOSED";
   });
@@ -1073,10 +1115,10 @@ function renderPositions(positions) {
     <tr>
       <td><strong>${escapeHtml(position.symbol)}</strong></td>
       <td>${renderMarketSourceBadge(position.market_source ?? position.source)}</td>
-      <td><span class="badge ${position.status === "ACTIVE" ? "good" : position.status === "DUST" ? "medium" : "neutral"}">${escapeHtml(position.status ?? "-")}</span></td>
-      <td>${formatNumber(position.quantity, 6)}</td>
-      <td>${formatNumber(position.average_buy_price, 6)}</td>
-      <td class="${position.gain_loss_pct >= 0 ? "momentum-bullish" : "momentum-bearish"}"><strong>${formatNumber(position.gain_loss_pct, 2)}%</strong></td>
+      <td><span class="badge ${position.status === "ACTIVE" ? "good" : position.status === "DUST" ? "medium" : "neutral"}">${escapeHtml(position.status ?? "-")}</span><small>${financialStatusLabel(position)}</small></td>
+      <td>${formatFinancial(position.decimal_values?.remaining_quantity ?? position.quantity, 6)}</td>
+      <td>${formatFinancial(position.average_buy_price, 6, "Coût inconnu")}</td>
+      <td class="${financialClass(position.gain_loss_pct)}"><strong>${formatFinancial(position.gain_loss_pct, 2)}${position.gain_loss_pct == null ? "" : "%"}</strong></td>
       <td>${formatNumber(position.take_profit_1, 6)}</td>
       <td>${formatNumber(position.take_profit_2, 6)}</td>
       <td>${formatNumber(position.stop_loss, 6)}</td>
@@ -1123,53 +1165,69 @@ function renderWatchCandidates(candidates) {
 }
 
 function pnlValue(position) {
-  if (position.source === "MANUAL") return Number(position.gain_loss_amount ?? position.unrealized_pnl ?? 0);
-  return Number(position.unrealized_pnl ?? position.gain_loss_amount ?? 0);
+  const value = position.source === "MANUAL"
+    ? position.gain_loss_amount ?? position.unrealized_pnl
+    : position.unrealized_pnl ?? position.gain_loss_amount;
+  return financialNumber(value);
 }
 
 function positionCurrentValue(position) {
-  return Number(position.current_value ?? 0);
+  const value = position.current_value;
+  return financialNumber(value);
 }
 
 function renderPortfolioSummary(pnl, positions = latestPositions) {
-  const activePositions = positions.filter(isActiveMarketPosition);
-  const openValue = activePositions.reduce((sum, position) => sum + positionCurrentValue(position), 0);
-  const unrealizedPnl = activePositions.reduce((sum, position) => sum + pnlValue(position), 0);
-  const realizedPnl = Number(pnl.realized_pnl ?? 0);
-  const totalPnl = unrealizedPnl + realizedPnl;
-  const portfolioValue = Number(pnl.usdc_available ?? 0) + openValue;
-  const eurValue = portfolioValue * Number(pnl.usdc_to_eur_rate_estimate ?? 0.92);
-  const pnlClass = totalPnl > 0 ? "momentum-bullish" : totalPnl < 0 ? "momentum-bearish" : "pnl-neutral";
-  const unrealizedClass = unrealizedPnl > 0 ? "momentum-bullish" : unrealizedPnl < 0 ? "momentum-bearish" : "pnl-neutral";
-  const realizedClass = realizedPnl > 0 ? "momentum-bullish" : realizedPnl < 0 ? "momentum-bearish" : "pnl-neutral";
-
+  // The server includes closed trades, dust and missing-data flags.
+  const portfolioValue = pnl.portfolio_value_usdc;
+  const unrealizedPnl = pnl.unrealized_pnl;
+  const realizedPnl = pnl.realized_pnl;
+  const totalPnl = pnl.total_pnl;
+  const activeCount = pnl.active_positions_count ?? positions.filter(isActiveMarketPosition).length;
+  const manualPositions = positions.filter((position) => position.source === "MANUAL" && position.status !== "CLOSED" && (position.is_active ?? 1) && financialNumber(position.quantity) > 0);
+  const manualValue = manualPositions.every((position) => financialNumber(position.current_value) !== null)
+    ? manualPositions.reduce((sum, position) => sum + financialNumber(position.current_value), 0) : null;
+  const overlap = manualPositions.some((manual) => positions.some((position) => position.source !== "MANUAL" && position.symbol === manual.symbol && position.status === "ACTIVE"));
+  const manualLabel = manualPositions.length ? `Manuel déclaré : ${formatFinancial(manualValue, 2)} USDC${overlap ? " · périmètres à confirmer" : ""}` : "";
+  const manualRecorded = financialNumber(pnl.manual_realized_pnl_recorded);
+  const manualClosed = Number(pnl.manual_closed_positions_count ?? 0) > 0
+    ? manualRecorded !== null ? `Manuel déclaré : ${formatFinancial(manualRecorded, 2)} USDC (non vérifié)`
+      : Number(pnl.manual_recorded_results_count ?? 0) > 0 ? `Manuel, sous-total déclaré : ${formatFinancial(pnl.known_manual_realized_pnl_recorded, 2)} USDC (incomplet)`
+      : "Manuel déclaré : Indisponible USDC (non vérifié)" : "";
+  const reliability = pnl.pnl_status === "EXACT" ? "Calcul vérifié"
+    : pnl.pnl_status === "ESTIMATED" ? "Estimation" : "Données incomplètes";
+  const known = portfolioValue == null && pnl.known_portfolio_value_usdc != null && pnl.sync_status !== "NEVER"
+    ? `Sous-total connu : ${formatFinancial(pnl.known_portfolio_value_usdc, 2)} USDC · ` : "";
   portfolioSummary.innerHTML = `
     <div class="portfolio-metric portfolio-main">
-      <span>Valeur portefeuille</span>
-      <strong>${formatNumber(portfolioValue, 2)} USDC</strong>
-      <small>≈ ${formatNumber(eurValue, 2)} € · ${activePositions.length} position${activePositions.length > 1 ? "s" : ""}</small>
+      <span>Valeur portefeuille Binance</span>
+      <strong>${formatFinancial(portfolioValue, 2)} USDC</strong>
+      <small>${known}${formatFinancial(pnl.portfolio_value_eur, 2)} € · ${formatNumber(activeCount, 0)} positions</small>
+      ${manualLabel ? `<small>${manualLabel}</small>` : ""}
     </div>
-    <div class="portfolio-metric" data-tooltip="Positions encore ouvertes">
+    <div class="portfolio-metric" data-tooltip="Positions encore ouvertes, poussières comprises">
       <span>PnL latent</span>
-      <strong class="${unrealizedClass}">${formatNumber(unrealizedPnl, 2)} USDC</strong>
-      <small>Positions ouvertes</small>
+      <strong class="${financialClass(unrealizedPnl)}">${formatFinancial(unrealizedPnl, 2)} USDC</strong>
+      <small>${reliability}</small>
     </div>
-    <div class="portfolio-metric" data-tooltip="Trades déjà clôturés">
+    <div class="portfolio-metric" data-tooltip="Trades déjà clôturés et ventes partielles comprises">
       <span>PnL réalisé</span>
-      <strong class="${realizedClass}">${formatNumber(realizedPnl, 2)} USDC</strong>
-      <small>Trades clôturés</small>
+      <strong class="${financialClass(realizedPnl)}">${formatFinancial(realizedPnl, 2)} USDC</strong>
+      <small>Trades déjà clôturés et ventes partielles</small>
+      ${manualClosed ? `<small>${manualClosed}</small>` : ""}
     </div>
-    <div class="portfolio-metric" data-tooltip="Résultat global : PnL latent + réalisé">
+    <div class="portfolio-metric" data-tooltip="Résultat global seulement si les données sont complètes">
       <span>PnL total</span>
-      <strong class="${pnlClass}">${formatNumber(totalPnl, 2)} USDC</strong>
-      <small class="${pnlClass}">Latent + réalisé</small>
+      <strong class="${financialClass(totalPnl)}">${formatFinancial(totalPnl, 2)} USDC</strong>
+      <small>${reliability}</small>
     </div>
   `;
 }
 
 function renderBinanceStatus(status) {
+  const states = { COMPLETE: "synchronisation complète", PARTIAL: "synchronisation partielle",
+    ERROR: "synchronisation indisponible", BUSY: "synchronisation en cours", NEVER: "non synchronisé" };
   const text = status.configured
-    ? `Binance : connecté · Sync. ${formatDateTime(status.last_sync)}`
+    ? `Binance : configuré · ${states[status.sync_status] || "état à vérifier"} · ${formatDateTime(status.last_sync)}`
     : "Binance : déconnecté (non configuré)";
   binanceStatusText.textContent = text;
   if (settingsBinanceStatus) settingsBinanceStatus.textContent = text;

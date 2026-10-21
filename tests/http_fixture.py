@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, unquote, parse_qs
 
 root = Path(__file__).resolve().parents[1]
 isolation = Path(os.environ["CRYPTOAI_TEST_ROOT"]).resolve()
@@ -30,6 +31,11 @@ def audit(event, args):
         raise AssertionError("Personal file forbidden in HTTP fixture")
     if event == "sqlite3.connect":
         name = os.fsdecode(args[0])
+        if name.startswith("file:"):
+            parsed=urlsplit(name)
+            if parse_qs(parsed.query).get("mode")==["memory"]:
+                return
+            name=unquote(parsed.path)
         if name not in ("", ":memory:") and not Path(name).resolve().is_relative_to(isolation):
             counts["sqlite_outside_tmp"] += 1
             raise AssertionError("SQLite must stay in fixture directory")

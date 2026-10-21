@@ -7,8 +7,8 @@ class FakeClient:
     def get_non_zero_balances(self):
         return [{"asset": "BTC", "free": 0.1, "locked": 0.0, "total": 0.1}]
 
-    def get_my_trades(self, symbol):
-        return [
+    def get_my_trades(self, symbol, *, from_id=0, limit=1000):
+        trades = [
             {
                 "id": 1,
                 "orderId": 11,
@@ -34,6 +34,8 @@ class FakeClient:
                 "isMaker": False,
             },
         ]
+        return [trade for trade in trades if trade["id"] >= from_id][:limit]
+
 
 
 def test_sync_balances(tmp_path) -> None:

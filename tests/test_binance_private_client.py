@@ -62,4 +62,5 @@ def test_get_non_zero_balances_with_mocked_request(monkeypatch) -> None:
 
     balances = client.get_non_zero_balances()
 
-    assert balances == [{"asset": "BTC", "free": 0.1, "locked": 0.0, "total": 0.1}]
+    assert balances == [{"asset": "BTC", "free": 0.1, "locked": 0.0, "total": 0.1,
+                         "free_decimal": "0.1", "locked_decimal": "0", "total_decimal": "0.1"}]

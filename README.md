@@ -503,7 +503,7 @@ Une position manuelle peut utiliser un symbole qui n'existe pas sur Binance Spot
 
 Seuils utilisés par défaut :
 
-Binance Alpha est utilise comme source de marche pour les tokens non disponibles sur Spot. Le resolver conserve le symbole natif (`CKP`, `MORPHO`) et utilise le `alphaId` de Binance Alpha pour appeler ticker et klines. Quand les candles Alpha sont disponibles, le cockpit calcule MA7/MA25/MA99, momentum et trend simple. Si elles ne sont pas disponibles, le prix, le volume, la valeur estimee et le PnL latent restent affiches.
+Binance Alpha est utilise comme source de marche pour les tokens non disponibles sur Spot. Le resolver conserve le symbole natif (`CKP`, `MORPHO`) et utilise le `alphaId` de Binance Alpha pour appeler ticker et klines. Quand les candles Alpha sont disponibles, le cockpit calcule MA7/MA25/MA99, momentum et trend simple. Si elles ne sont pas disponibles, les données de marché disponibles restent affichées. Une valorisation et un PnL monétaires exigent une cotation vérifiée, sa conversion éventuelle et un coût documenté ou déclaré ; sinon ils restent indisponibles.
 
 ```text
 MIN_POSITION_AMOUNT = 0.00000001
@@ -514,7 +514,7 @@ Un résidu comme `ETH ≈ 0.18 USDC`, `DOGE ≈ 0.05 USDC` ou `SOL ≈ 0.07 USDC
 
 ## Moteur PnL Binance
 
-Le PnL Binance est reconstruit à partir de l'historique de trades avec un FIFO simplifié, mais la quantité affichée vient toujours du solde Binance actuel :
+Le PnL Binance suit le FIFO décimal et les statuts documentés dans la section V5.3 lot 3. La quantité affichée vient du dernier solde confirmé, avec une incertitude explicite lorsque l'historique ne le réconcilie pas :
 
 - les achats créent des lots de coût ;
 - les ventes consomment les lots les plus anciens ;
@@ -528,7 +528,7 @@ Différences :
 - `unrealized_pnl` : gain/perte latent de la quantité actuellement détenue ;
 - `total_pnl` : réalisé + latent.
 
-Si la quantité reconstruite depuis les trades diffère du solde Binance réel, le solde Binance reste prioritaire et le calcul est marqué `is_estimated = true`. Les pourcentages latents sont masqués quand le coût restant est trop faible pour éviter des valeurs absurdes sur de la poussière.
+Si la quantité reconstruite depuis les trades diffère du solde confirmé, le solde reste prioritaire, le coût restant et le PnL non justifiables sont indisponibles ; une simple projection du coût moyen n'est pas présentée comme acquise. Les pourcentages latents sont masqués quand le coût restant est trop faible pour éviter des valeurs absurdes sur de la poussière.
 
 ## Routes API Binance privées
 
@@ -657,3 +657,59 @@ Le moteur V5 est une aide a la lecture du marche. Il ne predit pas le futur, ne 
 ## Avertissement
 
 Ce projet est uniquement une aide à la décision. Il ne constitue pas un conseil financier. Il n'exécute aucun achat ou vente automatique. Il n'exécute aucun ordre. Utiliser uniquement une clé API Binance en lecture seule.
+
+## Fiabilisation financière V5.3 — lot 3
+
+La synchronisation reste exclusivement en lecture : aucun endpoint de passage d'ordre ou de retrait n'est utilisable par le client. Les transactions sont identifiées par `(exchange, symbol, trade_id)`. Binance Spot réel et testnet ont des espaces distincts pour les trades, soldes, positions et curseurs. Une base correspond à un seul compte par réseau ; pour changer de compte Binance, utiliser une autre base.
+
+La première collecte commence à `fromId=0`, jamais au dernier trade existant. Les pages de 1 000 maximum sont enregistrées avec leur curseur dans une même transaction, jusqu'à une page vide explicite. Les reprises repartent du curseur durable ; un chevauchement doit correspondre à des transactions déjà vérifiées. Les doublons contradictoires, pages sans progression et budgets dépassés produisent un état d'erreur explicite. Les transactions héritées sont conservées et recontrôlées lors du premier parcours complet.
+
+Le catalogue Spot est parcouru pour les cotations USDC, USDT, EUR et BTC, même sans solde actuel : les positions déjà vendues sont ainsi recherchées. Les marchés historiques stockés restent interrogés. `CRYPTOAI_HISTORY_SYMBOLS` peut fournir des paires historiques supplémentaires séparées par des virgules, sans modifier le fichier .env. Un marché retiré du catalogue et jamais connu localement ne peut pas être découvert automatiquement ; l'API myTrades exige un symbole. Les historiques indisponibles, cotations non reconnues et conversions manquantes sont signalés. COMPLETE décrit la collecte dans ce périmètre, pas une preuve d'exhaustivité de toute la vie du compte.
+
+Les GET utilisent des tentatives et délais bornés. Un 429 avec Retry-After supérieur au budget n'est pas retenté avant ce délai : la tentative s'arrête et restitue l'attente conseillée. Après épuisement des retries, une panne globale, un bannissement ou un problème d'authentification coupe la boucle des marchés. Le débit d'un client est espacé d'au moins 250 ms ; les limites partagées de l'IP restent à respecter. La première collecte de milliers de marchés peut être longue. Les lectures publiques de prix et le catalogue utilisent le même réseau que le client réel/testnet.
+
+Un verrou SQLite avec propriétaire et expiration protège les synchronisations entre threads/processus. Chaque écriture de page et publication du portefeuille vérifie le propriétaire. Les pages déjà validées survivent à une interruption. Les soldes et les positions dérivées sont publiés atomiquement après une nouvelle réponse complète du compte. Une liste absente, malformée, un prix manquant ou une analyse indisponible ne vaut jamais fermeture. Seule une quantité confirmée nulle avec historique soldé et complet est classée CLOSED ; les retraits possibles ou historiques incomplets restent explicitement incertains. Les positions manuelles et leurs notes/niveaux ne sont pas écrasées. Les anciennes origines MIXED ne permettent pas de récupérer une composante manuelle déjà perdue avant ce lot.
+
+Le FIFO utilise Decimal dans un contexte local de 256 chiffres. Les trades et soldes natifs gardent leurs chaînes décimales SQLite ; les colonnes REAL et nombres JSON de compatibilité ne sont pas les valeurs comptables faisant autorité. `decimal_values` conserve les valeurs sans arrondi d'affichage à huit décimales. Les anciens REAL sont marqués LEGACY_FLOAT tant qu'ils n'ont pas été revérifiés. Les entrées non finies et pathologiques sont refusées explicitement.
+
+Les frais en actif acheté réduisent la quantité reçue ; ceux en actif vendu consomment aussi des lots. Les frais en cotation augmentent le coût ou réduisent le produit. Les paiements en troisième devise et les dépenses d'une cotation crypto consomment son inventaire. Une conversion historique nécessite une valeur explicitement documentée pour la devise, la cotation et l'horodatage concernés ; aucun prix actuel, interpolation ou parité USDT/USDC n'est substitué. La table historical_fx_rates conserve cette provenance par réseau ; ce lot ne télécharge pas automatiquement ces taux. Les conversions rendent l'évaluation estimative. Des exécutions de plusieurs marchés au même milliseconde ne sont pas ordonnées arbitrairement comme certaines.
+
+Les mouvements d'inventaire explicitement fournis au moteur comptable acceptent les entrées à coût documenté (devise obligatoire), les entrées à coût inconnu et les sorties sans réaliser une vente. La collecte automatique reste Spot : elle ne collecte pas tous les dépôts, retraits, transferts internes, récompenses, Earn ou opérations Convert. Un écart de quantité, même petit, interdit d'inventer le coût. Même sans écart, les mouvements qui se compensent ne peuvent être exclus : les résultats issus de Spot seul restent ESTIMATED avec `funding_history_status=NOT_DOCUMENTED`. EXACT n'est employé pour les références que lorsque les données fournies sont complètes. Ce moteur n'est pas une comptabilité fiscale.
+
+Le PnL réalisé inclut les ventes partielles, positions clôturées et poussières. Les positions manuelles gardent un périmètre déclaré distinct afin d'éviter les doublons avec Binance. Leur valorisation est également décimale et convertie en USDC seulement si la cotation et le taux sont connus. Les réalisés manuels historiques non nuls restent visibles comme déclarés non vérifiés ; un zéro par défaut sans preuve de vente demeure inconnu. Les positions et prix manquants ne sont pas transformés en zéros ; les totaux incomplets sont null, avec sous-totaux connus séparés. Les liquidités USDT/EUR sont valorisées seulement avec un cours observé, comptées une seule fois, et leur coût de change non documenté rend le PnL global incomplet. Le taux EUR fixe de 0,92 est supprimé ; une contre-valeur sans taux vérifié apparaît indisponible. Les prix Alpha sont convertis depuis leur devise effective ; un fallback de prix de token sans cotation vérifiée n'est pas une valorisation USDC.
+
+### Migration future : copie isolée et validation indépendante
+
+Aucune migration de `database/history.db` personnelle n'est autorisée par l'outil. Une base existante ne migre pas automatiquement au démarrage. Le démarrage sur l'ancien schéma échoue explicitement : ne pas relancer l'application sur la base personnelle avec ce code avant une procédure approuvée. Les nouvelles bases temporaires sont initialisées normalement.
+
+Après validation indépendante et autorisation distincte de l'utilisateur :
+
+1. Arrêter les écritures sur la base source ; vérifier qu'aucun WAL/SHM/journal actif ne subsiste. Ne jamais supprimer ces fichiers pour contourner cette vérification.
+2. Faire une sauvegarde cohérente et une copie de travail isolée dans un répertoire privé (0700, fichiers 0600). Ne pas exporter de lignes, notes, clés ou montants dans un rapport.
+3. Contrôler la copie, puis appliquer et recontrôler uniquement cette copie :
+
+```bash
+venv/bin/python -B tools/migrate_financial.py --database /chemin/prive/candidate.sqlite --check
+venv/bin/python -B tools/migrate_financial.py --database /chemin/prive/candidate.sqlite --apply
+venv/bin/python -B tools/migrate_financial.py --database /chemin/prive/candidate.sqlite --check
+```
+
+Le premier contrôle retourne MIGRATION_REQUIRED pour le schéma ancien sans écrire. L'application crée une sauvegarde SQLite vérifiée avant le DDL d'une copie existante. La migration v1 reconstruit sans suppression de lignes les contraintes des trades/soldes et les coûts de position devenus nullables ; elle conserve identifiants, séquences, index/triggers compatibles et tables historiques. Elle ajoute curseurs, verrou, état par réseau, provenance FX et statuts comptables. Les contraintes composites, types TEXT, intégrité, clés étrangères et comptes de lignes sont vérifiés. Un échec annule la transaction, conserve la sauvegarde et ne restaure ni ne détruit silencieusement de données.
+
+4. Comparer les comptes historiques avant/après et vérifier les contraintes sur des données synthétiques séparées. Ne pas lancer les tests sur la copie personnelle.
+5. La contre-vérification ne doit afficher que des comptes/statuts. Choisir une éventuelle mise en service de la copie validée par `CRYPTOAI_DB_PATH` dans l'environnement du serveur, sans écraser .env ni la base originale, uniquement après accord explicite.
+6. Une première synchronisation privée réelle demeure une action distincte à autoriser par le propriétaire. Le backfill depuis zéro peut retrouver des transactions anciennement perdues par collision si Binance conserve leur marché ; la migration seule ne peut pas les reconstituer.
+
+### Validation financière reproductible
+
+Toutes les bases utilisées par les commandes ci-dessous sont temporaires et synthétiques. Le réseau sortant et les accès aux fichiers personnels sont audités et interdits :
+
+```bash
+venv/bin/python -B tools/verify_offline.py
+venv/bin/python -B tools/verify_offline.py --coverage
+node tests/test_cockpit.js
+venv/bin/python -B tools/verify_financial_mutations.py --node /chemin/vers/node
+venv/bin/python -B tools/verify_security_mutations.py --node /chemin/vers/node
+```
+
+Les mutations travaillent uniquement dans des copies jetables de sources autorisées, vérifient d'abord la référence, puis contrôlent que les originaux n'ont pas changé. Les références comptables couvrent FIFO, frais, cotations multiples, mouvements, inconnus et très petits montants. Les tests d'intégration couvrent reprise, verrou périmé, concurrence, reset protégé, migration non destructive, réseau réel/testnet séparé et réponses FastAPI authentifiées. La sonde HTTP de sécurité reste un complément sur loopback uniquement, avec serveur sans aucune sortie réseau.

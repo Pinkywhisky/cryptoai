@@ -71,7 +71,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 install_security(app, templates)
 init_db()
-sync_in_progress = False
 logger = logging.getLogger("crypto_ai.watchlist")
 
 
@@ -731,28 +730,17 @@ def api_binance_status():
 
 @app.post("/api/binance/sync")
 def api_binance_sync():
-    global sync_in_progress
-    if sync_in_progress:
-        return {
-            "configured": True,
-            "read_only_mode": True,
-            "synced": False,
-            "message": "Synchronisation Binance déjà en cours",
-            "last_sync": get_binance_status().get("last_sync"),
-        }
-    sync_in_progress = True
+    # A durable SQLite lease serializes threads/processes and survives crashes.
     try:
         return sync_binance_account()
     except Exception as exc:
+        logger.warning("Binance synchronization failed (%s)", type(exc).__name__)
         return {
-            "configured": True,
-            "read_only_mode": True,
-            "synced": False,
+            "configured": True, "read_only_mode": True, "synced": False,
+            "sync_status": "ERROR",
             "message": "Synchronisation Binance indisponible",
             "last_sync": get_binance_status().get("last_sync"),
         }
-    finally:
-        sync_in_progress = False
 
 
 @app.get("/api/binance/balances")
@@ -792,11 +780,9 @@ def api_binance_dust():
 
 @app.post("/api/admin/reset")
 async def api_admin_reset(request: Request, reset_watchlist: bool = False):
-    global sync_in_progress
     await authorize_destructive(request, "RESET")
     table_summary = await run_in_threadpool(reset_database)
     cache_summary = await run_in_threadpool(scanner.reset_scan_cache, reset_watchlist=reset_watchlist)
-    sync_in_progress = False
 
     if request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
         return RedirectResponse("/", status_code=303)
@@ -805,7 +791,7 @@ async def api_admin_reset(request: Request, reset_watchlist: bool = False):
         "tables": table_summary,
         "cache": {
             **cache_summary,
-            "sync_in_progress": sync_in_progress,
+            "sync_in_progress": False,
         },
         "message": (
             "Données locales supprimées. Le marché peut réapparaître via les positions, "

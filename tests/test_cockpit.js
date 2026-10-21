@@ -41,7 +41,7 @@ function functionSource(name) {
 
 function loadFunctions(names, globals = {}) {
   const context = vm.createContext(globals);
-  vm.runInContext([...new Set(["escapeHtml", ...names])].map(functionSource).join("\n"), context, { filename: "static/app.js" });
+  vm.runInContext([...new Set(["escapeHtml", "financialNumber", "formatFinancial", "formatFinancialPercent", "financialClass", "financialStatusLabel", ...names])].map(functionSource).join("\n"), context, { filename: "static/app.js" });
   return context;
 }
 
@@ -470,4 +470,146 @@ test("a delayed response cannot refill the UI after session expiry", async () =>
   context.handleSessionExpired();
   complete({ status: 200, ok: true, headers: { get: () => "application/json" }, text: async () => '{"private":"data"}' });
   await assert.rejects(pending, /Session expiree/);
+});
+
+
+test("financial unknown values never become zero or a gain", () => {
+  const context = loadFunctions(["formatNumber", "pnlValue", "positionCurrentValue"]);
+  for (const value of [null, undefined, "", "not-a-number", Infinity]) {
+    assert.equal(context.formatFinancial(value), "Indisponible");
+  }
+  assert.equal(context.formatFinancial(0), "0");
+  assert.equal(context.pnlValue({source:"BINANCE",unrealized_pnl:null}), null);
+  assert.equal(context.positionCurrentValue({current_value:null}), null);
+  assert.equal(context.financialClass(null), "pnl-neutral");
+});
+
+test("tiny positive quantities are visible rather than rounded to zero", () => {
+  const context = loadFunctions(["formatNumber"]);
+  assert.match(context.formatFinancial("0.000000000001", 6), /e-12/);
+  assert.notEqual(context.formatFinancial("0.000000000001", 6), "0");
+});
+
+test("price outage preserves visibility of an active holding", () => {
+  const context = loadFunctions(["isActiveMarketPosition"], {MIN_ACTIVE_POSITION_VALUE_USDC:1});
+  assert.equal(context.isActiveMarketPosition({
+    source:"BINANCE",status:"ACTIVE",is_active:1,quantity:1,current_value:null,
+  }), true);
+  assert.equal(context.isActiveMarketPosition({
+    source:"BINANCE",status:"CLOSED",is_active:0,quantity:0,current_value:null,
+  }), false);
+});
+
+test("financial portfolio uses server totals including closed realized trades", () => {
+  const portfolioSummary = {innerHTML:""};
+  const context = loadFunctions(["formatNumber","renderPortfolioSummary"], {portfolioSummary,latestPositions:[]});
+  context.renderPortfolioSummary({
+    portfolio_value_usdc:43.5,portfolio_value_eur:null,realized_pnl:150,
+    unrealized_pnl:.5,total_pnl:150.5,active_positions_count:1,pnl_status:"EXACT",
+  });
+  assert.match(portfolioSummary.innerHTML,/150,5/);
+  assert.match(portfolioSummary.innerHTML,/43,5/);
+  assert.match(portfolioSummary.innerHTML,/Indisponible/);
+  assert.doesNotMatch(portfolioSummary.innerHTML,/40,02/); // old invented EUR rate .92
+});
+
+test("partial financial data shows the known subtotal without a fictitious total", () => {
+  const portfolioSummary = {innerHTML:""};
+  const context = loadFunctions(["formatNumber","renderPortfolioSummary"], {portfolioSummary,latestPositions:[]});
+  context.renderPortfolioSummary({
+    portfolio_value_usdc:null,known_portfolio_value_usdc:110,
+    realized_pnl:5,unrealized_pnl:null,total_pnl:null,active_positions_count:2,
+    sync_status:"PARTIAL",pnl_status:"INCOMPLETE",
+  });
+  assert.match(portfolioSummary.innerHTML,/Sous-total connu : 110/);
+  assert.match(portfolioSummary.innerHTML,/Données incomplètes/);
+  assert.match(portfolioSummary.innerHTML,/Indisponible/);
+  assert.doesNotMatch(portfolioSummary.innerHTML,/>0 USDC</);
+});
+
+test("position table keeps unknown-cost holdings visible with an explicit label", () => {
+  const positionsBody = {innerHTML:""};
+  const context = loadFunctions(["formatNumber","renderPositions"], {
+    positionsBody,latestPositions:[],MIN_ACTIVE_POSITION_VALUE_USDC:1,
+    renderMarketSourceBadge:()=>"<span>Spot</span>",
+  });
+  context.renderPositions([{
+    id:1,symbol:"ABCUSDC",source:"BINANCE",status:"ACTIVE",quantity:1,
+    current_value:null,average_buy_price:null,gain_loss_pct:null,
+    data_status:"COST_UNKNOWN",market_source:"BINANCE_SPOT",
+  }]);
+  assert.match(positionsBody.innerHTML,/ABCUSDC/);
+  assert.match(positionsBody.innerHTML,/Coût inconnu/);
+  assert.match(positionsBody.innerHTML,/Indisponible/);
+  assert.doesNotMatch(positionsBody.innerHTML,/momentum-bullish/);
+});
+
+test("financial reliability labels cannot inject API-provided markup", () => {
+  const context = loadFunctions([]);
+  assert.equal(context.financialStatusLabel({data_status:'"><img src=x onerror=alert(1)>'}),"");
+});
+
+test("configured Binance keys are distinguished from a successful synchronization", () => {
+  const node = {textContent:""};
+  const context = loadFunctions(["formatDateTime","renderBinanceStatus"], {
+    binanceStatusText:node,settingsBinanceStatus:null,
+  });
+  context.renderBinanceStatus({configured:true,sync_status:"ERROR",last_sync:null});
+  assert.match(node.textContent,/configuré/);
+  assert.match(node.textContent,/indisponible/);
+  assert.doesNotMatch(node.textContent,/connecté/);
+});
+
+
+test("malformed financial values and numeric underflow are unavailable rather than zero", () => {
+  const context = loadFunctions(["formatNumber","pnlValue","positionCurrentValue"]);
+  for (const value of [false,true,[],{}," ","0x1","1e-400"]) {
+    assert.equal(context.formatFinancial(value), "Indisponible");
+    assert.equal(context.formatFinancialPercent(value), "Indisponible");
+    assert.equal(context.financialClass(value), "pnl-neutral");
+    assert.equal(context.pnlValue({source:"BINANCE",unrealized_pnl:value}), null);
+    assert.equal(context.positionCurrentValue({current_value:value}), null);
+  }
+  assert.equal(context.formatFinancial("0E-400"), "0");
+});
+
+
+test("manual holdings remain visible separately without doubling the Binance wallet", () => {
+  const portfolioSummary = {innerHTML:""};
+  const context = loadFunctions(["formatNumber","renderPortfolioSummary"], {portfolioSummary,latestPositions:[]});
+  context.renderPortfolioSummary({
+    portfolio_value_usdc:110,unrealized_pnl:10,realized_pnl:0,total_pnl:10,
+    active_positions_count:1,pnl_status:"ESTIMATED",
+  },[
+    {source:"BINANCE",symbol:"ABCUSDC",quantity:1,status:"ACTIVE",is_active:1,current_value:110},
+    {source:"MANUAL",symbol:"ABCUSDC",quantity:1,status:"MANUAL",is_active:1,current_value:50},
+  ]);
+  assert.match(portfolioSummary.innerHTML,/Manuel déclaré : 50 USDC/);
+  assert.match(portfolioSummary.innerHTML,/périmètres à confirmer/);
+  assert.doesNotMatch(portfolioSummary.innerHTML,/>160 USDC</);
+});
+
+test("unknown manual valuation and unverified closed result stay explicit", () => {
+  const portfolioSummary = {innerHTML:""};
+  const context = loadFunctions(["formatNumber","renderPortfolioSummary"], {portfolioSummary,latestPositions:[]});
+  context.renderPortfolioSummary({
+    portfolio_value_usdc:110,unrealized_pnl:10,realized_pnl:0,total_pnl:10,
+    active_positions_count:1,pnl_status:"ESTIMATED",
+    manual_closed_positions_count:1,manual_realized_pnl_recorded:9,
+  },[{source:"MANUAL",symbol:"XYZUSDC",quantity:1,status:"MANUAL",current_value:null}]);
+  assert.match(portfolioSummary.innerHTML,/Manuel déclaré : Indisponible USDC/);
+  assert.match(portfolioSummary.innerHTML,/Manuel déclaré : 9 USDC \(non vérifié\)/);
+});
+
+
+test("a known manual closed subtotal remains visible when other manual results are unknown", () => {
+  const portfolioSummary = {innerHTML:""};
+  const context = loadFunctions(["formatNumber","renderPortfolioSummary"], {portfolioSummary,latestPositions:[]});
+  context.renderPortfolioSummary({
+    portfolio_value_usdc:110,unrealized_pnl:10,realized_pnl:0,total_pnl:10,
+    active_positions_count:1,pnl_status:"ESTIMATED",manual_closed_positions_count:2,
+    manual_realized_pnl_recorded:null,manual_recorded_results_count:1,
+    known_manual_realized_pnl_recorded:9,
+  });
+  assert.match(portfolioSummary.innerHTML,/sous-total déclaré : 9 USDC \(incomplet\)/);
 });

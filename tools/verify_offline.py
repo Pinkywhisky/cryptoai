@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 import tempfile
+from urllib.parse import urlsplit, unquote, parse_qs
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,11 @@ def audit(event,args):
         raise AssertionError("Personal file forbidden")
     if event=="sqlite3.connect":
         name=os.fsdecode(args[0])
+        if name.startswith("file:"):
+            parsed=urlsplit(name)
+            if parse_qs(parsed.query).get("mode")==["memory"]:
+                return
+            name=unquote(parsed.path)
         if name not in ("",":memory:") and not Path(name).resolve().is_relative_to("/tmp"):
             COUNTS["sqlite_outside_tmp"]+=1
             raise AssertionError("Only temporary SQLite allowed")
@@ -79,7 +85,11 @@ def main():
         directory=Path(tempfile.mkdtemp(prefix="cryptoai-coverage-"))
         results.write_results(show_missing=True,summary=False,coverdir=str(directory))
         targets=["main.py","services/auth.py","services/login_limiter.py","services/api_models.py",
-                 "services/trusted_proxy.py","services/security_logging.py"]
+                 "services/trusted_proxy.py","services/security_logging.py",
+                 "services/binance_private_client.py","services/binance_trade_history.py",
+                 "services/binance_portfolio.py","services/binance_sync.py","services/pnl.py",
+                 "services/financial_migrations.py","services/history.py",
+                 "services/personal_data.py","services/market_universe.py"]
         summary={}
         for name in targets:
             filename=str(ROOT/name)

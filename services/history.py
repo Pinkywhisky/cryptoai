@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from services.financial_migrations import prepare_financial_migration, apply_financial_schema
+
 
 DB_PATH = Path(
     os.getenv("CRYPTOAI_DB_PATH")
@@ -19,6 +21,10 @@ RESETTABLE_TABLES = [
     "binance_balances",
     "binance_trades",
     "binance_sync_state",
+    "exchange_sync_state",
+    "binance_trade_sync",
+    "financial_sync_lock",
+    "historical_fx_rates",
     "score_snapshots",
     "backtest_results",
     "market_cache",
@@ -39,11 +45,13 @@ def _add_column_if_missing(
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
-def init_db(db_path: Path | str = DB_PATH) -> None:
+def init_db(db_path: Path | str = DB_PATH, *, allow_financial_migration: bool = False) -> None:
     path = Path(db_path)
+    prepare_financial_migration(path, allow_existing=allow_financial_migration)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS market_history (
@@ -256,6 +264,7 @@ def init_db(db_path: Path | str = DB_PATH) -> None:
             )
             """
         )
+        apply_financial_schema(connection)
         connection.commit()
 
 

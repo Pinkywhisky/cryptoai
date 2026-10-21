@@ -1,12 +1,15 @@
 import json
 import sqlite3
+from decimal import Decimal, localcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from services.pnl import decimal_value, split_market, value_declared_position
+from services.binance_portfolio import decode_position
 from services.history import DB_PATH, init_db
 from services.market_cache import invalidate_market_cache
-from services.binance_sync import MIN_ACTIVE_POSITION_VALUE_USDC
+from services.binance_sync import MIN_ACTIVE_POSITION_VALUE_USDC, _selected_exchange
 from services.binance_alpha import (
     MARKET_SOURCE_ALPHA,
     MARKET_SOURCE_MANUAL,
@@ -105,7 +108,7 @@ def _connect(db_path: Path | str = DB_PATH) -> sqlite3.Connection:
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return dict(row)
+    return decode_position(row)
 
 
 def _clean_payload(payload: dict[str, Any], allowed_fields: list[str]) -> dict[str, Any]:
@@ -247,31 +250,100 @@ def _distance_to_level(current_price: float | None, level: float | None) -> floa
     return round((level - current_price) / current_price * 100, 4)
 
 
-def enrich_position(position: dict[str, Any]) -> dict[str, Any]:
+
+
+def get_manual_fx_rate(asset: str):
+    from services import binance_sync
+    if asset=="USDC":
+        return Decimal(1)
+    direct=binance_sync.get_current_price(asset+"USDC")
+    if direct is not None:
+        return decimal_value(direct,nonnegative=True)
+    inverse=binance_sync.get_current_price("USDC"+asset)
+    if inverse is None:
+        return None
+    inverse=decimal_value(inverse,nonnegative=True)
+    return Decimal(1)/inverse if inverse>0 else None
+
+
+def _manual_financial_values(position, snapshot, fx_rates=None):
+    cache={} if fx_rates is None else fx_rates
+    quote=snapshot.get("price_quote_asset") or snapshot.get("quote_asset")
+    raw=snapshot.get("current_price")
+    if snapshot.get("market_source")=="BINANCE_ALPHA":
+        if not quote:
+            _,quote=split_market(snapshot.get("alpha_trading_symbol",""))
+        ticker=snapshot.get("ticker") or {}
+        raw=ticker.get("lastPrice",ticker.get("price"))
+        if raw is None and (snapshot.get("price_quote_asset") or snapshot.get("quote_asset")):
+            raw=snapshot.get("current_price")
+    elif not quote:
+        _,quote=split_market(snapshot.get("symbol") or position["symbol"])
+    price=None
+    with localcontext() as context:
+        context.prec=256
+        try:
+            if raw is not None and quote:
+                value=decimal_value(raw,nonnegative=True)
+                if quote=="USDC":
+                    rate=Decimal(1)
+                else:
+                    if quote not in cache:
+                        cache[quote]=get_manual_fx_rate(quote)
+                    rate=cache[quote]
+                if value>0 and rate is not None:
+                    rate=decimal_value(rate,nonnegative=True)
+                    if rate>0:
+                        price=value*rate
+        except (ValueError,TypeError):
+            price=None
+        result=value_declared_position(position.get("quantity"),position.get("invested_amount"),price)
+        if quote and quote!="USDC" and price is not None:
+            result["price_status"]="ESTIMATED"
+        result["reporting_quote_asset"]="USDC"
+        return result
+
+
+
+def enrich_position(position: dict[str, Any], *, fx_rates=None) -> dict[str, Any]:
     enriched = dict(position)
     snapshot = get_market_snapshot(position["symbol"])
+    if position.get("synced_from_binance"):
+        # Financial facts are the dated accounting snapshot; analysis never
+        # reconstructs a cost from zero/None or overwrites a converted USDC price.
+        enriched.update({
+            "gain_loss_amount":position.get("unrealized_pnl"),
+            "gain_loss_pct":position.get("profit_loss_pct"),
+            "valuation_as_of":position.get("last_sync_at"),
+            "analysis_available":snapshot.get("analysis_available",False),
+            "is_valid_symbol":snapshot.get("is_valid_symbol",False),
+            "global_score":snapshot.get("global_score"),
+            "global_trend":snapshot.get("global_trend"),
+            "setup_quality":snapshot.get("setup_quality"),
+            "signal":snapshot.get("global_signal"),
+            "score":snapshot.get("global_score"),
+            "trend_score":calculate_trend_score(snapshot) if snapshot.get("analysis_available") else "UNKNOWN",
+        })
+        return enriched
+    financial=_manual_financial_values(position,snapshot,fx_rates)
+    enriched.update(financial)
     if not snapshot.get("analysis_available", True):
-        current_price = snapshot.get("current_price")
-        quantity = float(position.get("quantity") or 0)
-        invested_amount = float(position.get("invested_amount") or 0)
-        current_value = current_price * quantity if current_price is not None else None
-        gain_loss_amount = (
-            round(current_value - invested_amount, 6)
-            if current_value is not None
-            else None
-        )
+        current_price = financial["current_price"]
+        invested_amount = position.get("invested_amount")
+        current_value = financial["current_value"]
+        gain_loss_amount = financial["gain_loss_amount"]
         enriched.update(
             {
                 "is_valid_symbol": snapshot.get("is_valid_symbol", False),
                 "analysis_available": False,
                 "limited_analysis": snapshot.get("limited_analysis", False),
-                "price_available": snapshot.get("price_available", False),
+                "price_available": current_price is not None,
                 "market_source": snapshot.get("market_source"),
                 "market_error": snapshot.get("market_error", "Analyse indisponible"),
                 "current_price": current_price,
-                "current_value": round(current_value, 6) if current_value is not None else None,
+                "current_value": current_value,
                 "gain_loss_amount": gain_loss_amount,
-                "gain_loss_pct": _pct(gain_loss_amount, invested_amount),
+                "gain_loss_pct": financial["gain_loss_pct"],
                 "global_score": snapshot.get("global_score"),
                 "global_trend": snapshot.get("global_trend"),
                 "setup_quality": snapshot.get("setup_quality"),
@@ -290,23 +362,17 @@ def enrich_position(position: dict[str, Any]) -> dict[str, Any]:
         )
         return enriched
 
-    current_price = snapshot.get("current_price")
-    quantity = float(position["quantity"])
-    invested_amount = float(position["invested_amount"])
-    average_buy_price = float(position["average_buy_price"])
-
-    current_value = current_price * quantity if current_price is not None else None
-    gain_loss_amount = (
-        round(current_value - invested_amount, 6)
-        if current_value is not None
-        else None
-    )
-    gain_loss_pct = _pct(gain_loss_amount, invested_amount)
+    current_price = financial["current_price"]
+    invested_amount = position.get("invested_amount")
+    average_buy_price = position.get("average_buy_price")
+    current_value = financial["current_value"]
+    gain_loss_amount = financial["gain_loss_amount"]
+    gain_loss_pct = financial["gain_loss_pct"]
 
     enriched.update(
         {
             "current_price": current_price,
-            "current_value": round(current_value, 6) if current_value is not None else None,
+            "current_value": current_value,
             "market_source": snapshot.get("market_source"),
             "limited_analysis": snapshot.get("limited_analysis", False),
             "gain_loss_amount": gain_loss_amount,
@@ -345,9 +411,10 @@ def enrich_position(position: dict[str, Any]) -> dict[str, Any]:
 
 def list_positions(db_path: Path | str = DB_PATH, enrich: bool = True) -> list[dict[str, Any]]:
     with _connect(db_path) as connection:
-        rows = connection.execute("SELECT * FROM positions ORDER BY id DESC").fetchall()
+        rows = connection.execute("SELECT * FROM positions WHERE COALESCE(synced_from_binance,0)=0 OR exchange=? ORDER BY id DESC",(_selected_exchange(),)).fetchall()
     positions = [_row_to_dict(row) for row in rows]
-    return [enrich_position(position) for position in positions] if enrich else positions
+    fx_rates={}
+    return [enrich_position(position,fx_rates=fx_rates) for position in positions] if enrich else positions
 
 
 def create_position(payload: dict[str, Any], db_path: Path | str = DB_PATH) -> dict[str, Any]:

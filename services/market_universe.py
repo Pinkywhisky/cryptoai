@@ -35,7 +35,11 @@ def is_active_position(position: dict[str, Any]) -> bool:
     status = position.get("status", "MANUAL")
     source = position.get("source", "MANUAL")
     if source in {"BINANCE", "MIXED"}:
-        return status == "ACTIVE" and float(position.get("current_value") or 0) >= MIN_ACTIVE_POSITION_VALUE_USDC
+        value=position.get("current_value")
+        return status == "ACTIVE" and (
+            float(position.get("quantity") or 0)>0 if value is None
+            else float(value)>=MIN_ACTIVE_POSITION_VALUE_USDC
+        )
     return status in {"MANUAL", "ACTIVE"}
 
 
@@ -93,6 +97,14 @@ def _position_info(position: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": position.get("id"),
         "quantity": position.get("quantity"),
+        "decimal_values":position.get("decimal_values"),
+        "data_status":position.get("data_status"),
+        "pnl_status":position.get("pnl_status"),
+        "cost_basis_status":position.get("cost_basis_status"),
+        "price_status":position.get("price_status"),
+        "history_status":position.get("history_status"),
+        "funding_history_status":position.get("funding_history_status"),
+        "is_estimated":position.get("is_estimated"),
         "average_buy_price": position.get("average_buy_price"),
         "current_price": position.get("current_price"),
         "current_value": position.get("current_value"),
