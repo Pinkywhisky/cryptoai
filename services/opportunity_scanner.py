@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import requests
+from services.binance_api_budget import budgeted_get
 
 
 BINANCE_TICKER_24H_URL = "https://api.binance.com/api/v3/ticker/24hr"
@@ -50,7 +51,7 @@ def is_eligible_symbol(symbol: str, quote: str = "USDC") -> bool:
 
 
 def _fetch_tickers() -> list[dict[str, Any]]:
-    response = requests.get(BINANCE_TICKER_24H_URL, timeout=10)
+    response = budgeted_get(BINANCE_TICKER_24H_URL, timeout=10)
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, list):

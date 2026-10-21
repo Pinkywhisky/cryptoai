@@ -7,6 +7,17 @@ const symbolInput = document.querySelector("#symbolInput");
 const refreshButton = document.querySelector("#refreshButton") ?? document.querySelector("#marketRefreshButton");
 const statusText = document.querySelector("#statusText");
 const nextRefreshText = document.querySelector("#nextRefreshText");
+const syncJobStatus = document.querySelector("#syncJobStatus");
+const syncCancelButton = document.querySelector("#syncCancelButton");
+const syncResumeButton = document.querySelector("#syncResumeButton");
+const syncBootstrapSymbols = document.querySelector("#syncBootstrapSymbols");
+const syncBootstrapFull = document.querySelector("#syncBootstrapFull");
+const syncBootstrapPreview = document.querySelector("#syncBootstrapPreview");
+const syncBootstrapPreviewButton = document.querySelector("#syncBootstrapPreviewButton");
+const syncBootstrapStart = document.querySelector("#syncBootstrapStart");
+let syncPollTimer = null;
+let syncPreview = null;
+let activeSyncJob = null;
 const binanceStatusText = document.querySelector("#binanceStatusText");
 const binanceSyncButton = document.querySelector("#binanceSyncButton") ?? document.querySelector("#marketSyncButton");
 const adminResetButton = document.querySelector("#adminResetButton");
@@ -614,16 +625,21 @@ function scheduleSessionExpiry() {
 }
 
 function handleSessionExpired() {
+  if (syncPollTimer !== null) window.clearTimeout(syncPollTimer);
+  syncPollTimer = null;
+  activeSyncJob = null;
+  syncPreview = null;
   if (sessionExpired) return;
   sessionExpired = true;
   clearTimeout(autoRefreshTimer);
   clearTimeout(refreshDebounceTimer);
   clearTimeout(sessionExpiryTimer);
   clearFrontendCache();
-  document.querySelectorAll("#resultsBody, #mobileCards, #positionsBody, #watchBody, #journalList, #journalStats, #aiAlertsList, #portfolioSummary, #detailContent")
+  document.querySelectorAll("#resultsBody, #mobileCards, #positionsBody, #watchBody, #journalList, #journalStats, #aiAlertsList, #portfolioSummary, #detailContent, #syncJobStatus, #syncBootstrapPreview")
     .forEach((element) => { element.innerHTML = ""; });
   document.querySelectorAll("#positionForm, #watchForm, #quickWatchForm, #journalForm, #adminResetForm")
     .forEach((form) => form.reset());
+  document.querySelectorAll("#syncBootstrapSymbols").forEach((input) => { input.value = ""; });
   window.location.replace("/login?expired=1");
 }
 
@@ -1223,6 +1239,89 @@ function renderPortfolioSummary(pnl, positions = latestPositions) {
   `;
 }
 
+function syncJobActive(job) {
+  return Boolean(job && ["QUEUED", "RUNNING", "CANCELLING"].includes(job.status));
+}
+
+function syncJobText(job) {
+  if (!job) return "";
+  const labels = { QUEUED: "En attente", RUNNING: "Synchronisation en cours",
+    CANCELLING: "Annulation demandée", CANCELLED: "Synchronisation annulée",
+    INTERRUPTED: "Synchronisation interrompue, reprise possible", PAUSED_QUOTA: "Suspendue par les quotas",
+    COMPLETED: "Synchronisation terminée", PARTIAL: "Historique ou données incomplets",
+    ERROR: "Synchronisation indisponible" };
+  const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  let text = (labels[job.status] || "État à vérifier") + " · " + count(job.processed) + "/" +
+    count(job.total) + " marchés · " + count(job.remaining) + " restants · " + count(job.inserted) + " nouveaux trades";
+  if (job.result?.unexplored_markets > 0) text += " · " + count(job.result.unexplored_markets) + " marchés non explorés";
+  if (job.result?.markets_unrefreshed > 0) text += " | " + count(job.result.markets_unrefreshed) + " marchés non réactualisés";
+  if (job.result?.historical_coverage_as_of) text += " | couverture au " + formatDateTime(job.result.historical_coverage_as_of);
+  if (job.retry_at) text += " · reprise après " + formatDateTime(new Date(job.retry_at * 1000).toISOString());
+  if (job.updated_at) text += " · activité " + formatDateTime(new Date(job.updated_at * 1000).toISOString());
+  const errorCount = Number.isSafeInteger(job.error_count) ? job.error_count : job.errors?.length;
+  if (errorCount) text += " · " + count(errorCount) + " erreurs de marché";
+  return text;
+}
+
+function renderSyncJob(job) {
+  activeSyncJob = job || null;
+  if (syncJobStatus) syncJobStatus.textContent = syncJobText(job);
+  const active = syncJobActive(job);
+  if (syncCancelButton) syncCancelButton.hidden = !active;
+  if (syncResumeButton) {
+    syncResumeButton.hidden = !job || !["CANCELLED", "INTERRUPTED", "PAUSED_QUOTA", "ERROR", "PARTIAL"].includes(job.status);
+    syncResumeButton.disabled = Boolean(job?.retry_at && job.retry_at * 1000 > Date.now());
+  }
+  setButtonLoading(binanceSyncButton, active, "Synchronisation...");
+  setButtonLoading(settingsSyncButton, active, "Synchronisation...");
+  if (syncBootstrapStart) syncBootstrapStart.disabled = active || !syncPreview?.symbols?.length;
+  if (active) scheduleSyncPoll();
+  else if (job?.status === "PAUSED_QUOTA" && job.retry_at * 1000 > Date.now()) {
+    scheduleSyncPoll(Math.min(60000, Math.max(1000, job.retry_at * 1000 - Date.now())));
+  }
+}
+
+function scheduleSyncPoll(delay = 2000) {
+  if (syncPollTimer !== null) return;
+  syncPollTimer = window.setTimeout(async () => {
+    syncPollTimer = null;
+    try {
+      const status = await apiFetch("/api/binance/status");
+      const wasActive = syncJobActive(activeSyncJob);
+      renderBinanceStatus(status);
+      if (wasActive && !syncJobActive(status.job)) {
+        await loadPersonalData();
+        await loadMarket(false);
+      }
+    } catch (error) {
+      if (syncJobStatus) syncJobStatus.textContent = error.message;
+    }
+  }, delay);
+}
+
+async function startSyncJob(payload = {}) {
+  if (isSyncingBinance || syncJobActive(activeSyncJob)) return;
+  isSyncingBinance = true;
+  try {
+    const result = await apiFetch("/api/binance/sync", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (result.job) renderSyncJob(result.job);
+    else binanceStatusText.textContent = result.message || "Synchronisation indisponible";
+  } catch (error) {
+    binanceStatusText.textContent = error.message;
+  } finally {
+    isSyncingBinance = false;
+  }
+}
+
+function bootstrapPreviewText(preview) {
+  const count = preview?.symbols?.length || 0;
+  return count + " marchés sélectionnés ; au moins " + (preview?.cost?.private_requests_min || 0) +
+    " requêtes privées ; poids estimé minimum " + (preview?.cost?.estimated_weight || 0) +
+    ". Les pages supplémentaires augmentent ce coût. " + (preview?.unexplored_markets || 0) +
+    " marchés encore non explorés. Les positions déjà vendues ne se déduisent pas des soldes courants.";
+}
+
 function renderBinanceStatus(status) {
   const states = { COMPLETE: "synchronisation complète", PARTIAL: "synchronisation partielle",
     ERROR: "synchronisation indisponible", BUSY: "synchronisation en cours", NEVER: "non synchronisé" };
@@ -1230,6 +1329,7 @@ function renderBinanceStatus(status) {
     ? `Binance : configuré · ${states[status.sync_status] || "état à vérifier"} · ${formatDateTime(status.last_sync)}`
     : "Binance : déconnecté (non configuré)";
   binanceStatusText.textContent = text;
+  renderSyncJob(status.job);
   if (settingsBinanceStatus) settingsBinanceStatus.textContent = text;
 }
 
@@ -1782,30 +1882,39 @@ document.querySelectorAll(".modal").forEach((modal) => {
   });
 });
 
-binanceSyncButton.addEventListener("click", async () => {
-  if (isSyncingBinance) return;
-  isSyncingBinance = true;
-  dashboardState.isSyncingBinance = true;
-  setButtonLoading(binanceSyncButton, true, "Synchronisation...");
-  setButtonLoading(settingsSyncButton, true, "Synchronisation...");
-  binanceStatusText.textContent = "Synchronisation Binance en cours...";
+binanceSyncButton.addEventListener("click", () => startSyncJob());
+
+syncCancelButton?.addEventListener("click", async () => {
+  if (!activeSyncJob) return;
   try {
-    const result = await apiFetch("/api/binance/sync", { method: "POST" });
-    dashboardState.lastBinanceSync = result.last_sync ? new Date(result.last_sync) : new Date();
-    binanceStatusText.textContent = result.synced
-      ? `Synchronisation Binance OK · ${formatDateTime(result.last_sync)}`
-      : result.message;
-    await loadPersonalData();
-    await loadMarket(true);
-    await loadV5Data();
-  } catch (error) {
-    binanceStatusText.textContent = error.message;
-  } finally {
-    isSyncingBinance = false;
-    dashboardState.isSyncingBinance = false;
-    setButtonLoading(binanceSyncButton, false);
-    setButtonLoading(settingsSyncButton, false);
-  }
+    renderSyncJob(await apiFetch("/api/binance/sync/jobs/" + encodeURIComponent(activeSyncJob.id) + "/cancel", { method: "POST" }));
+  } catch (error) { if (syncJobStatus) syncJobStatus.textContent = error.message; }
+});
+syncResumeButton?.addEventListener("click", () => {
+  if (activeSyncJob) startSyncJob({ resume_id: activeSyncJob.id });
+});
+function invalidateBootstrapPreview() {
+  syncPreview = null;
+  if (syncBootstrapStart) syncBootstrapStart.disabled = true;
+  if (syncBootstrapPreview) syncBootstrapPreview.textContent = "";
+}
+syncBootstrapSymbols?.addEventListener("input", invalidateBootstrapPreview);
+syncBootstrapFull?.addEventListener("change", invalidateBootstrapPreview);
+syncBootstrapPreviewButton?.addEventListener("click", async () => {
+  invalidateBootstrapPreview();
+  try {
+    const symbols = (syncBootstrapSymbols?.value || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    syncPreview = await apiFetch("/api/binance/sync/preview", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols, full_scan: Boolean(syncBootstrapFull?.checked) }) });
+    syncBootstrapPreview.textContent = bootstrapPreviewText(syncPreview);
+    syncBootstrapStart.disabled = syncJobActive(activeSyncJob) || !syncPreview.symbols.length;
+  } catch (error) { if (syncBootstrapPreview) syncBootstrapPreview.textContent = error.message; }
+});
+syncBootstrapStart?.addEventListener("click", async () => {
+  if (!syncPreview) return;
+  if (syncPreview.requires_confirmation && !window.confirm("Confirmer l'exploration complète ? " + bootstrapPreviewText(syncPreview))) return;
+  await startSyncJob({ mode: "bootstrap", preview_id: syncPreview.id, confirmed: Boolean(syncPreview.requires_confirmation) });
 });
 
 document.querySelector("#adminResetForm")?.addEventListener("submit", (event) => {

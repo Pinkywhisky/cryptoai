@@ -21,6 +21,10 @@ class SyncBusy(RuntimeError):
     pass
 
 
+class SyncCancelled(RuntimeError):
+    pass
+
+
 class LeaseLost(RuntimeError):
     pass
 
@@ -29,8 +33,16 @@ def now():
     return datetime.now(UTC).isoformat()
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 def connect(path):
-    connection = sqlite3.connect(path,timeout=10)
+    connection = sqlite3.connect(path,timeout=10,factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -44,9 +56,9 @@ def fence(connection, exchange, owner, *, clock=time.time):
 
 
 @contextmanager
-def sync_lease(path, *, exchange=EXCHANGE, clock=time.time):
+def sync_lease(path, *, exchange=EXCHANGE, clock=time.time, owner=None):
     init_db(path)
-    owner = uuid.uuid4().hex
+    owner = owner or uuid.uuid4().hex
     with connect(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
@@ -116,12 +128,12 @@ def store_page(connection, trades, *, exchange, base_asset, quote_asset):
 
 
 def sync_market_history(symbol, client, db_path, *, owner=None, exchange=None,
-                        base_asset=None, quote_asset=None, page_size=1000, max_pages=10000, collect_trades=False):
+                        base_asset=None, quote_asset=None, page_size=1000, max_pages=10000, collect_trades=False, checkpoint=None, progress=None):
     exchange=exchange or exchange_for_client(client)
     if owner is None:
         with sync_lease(db_path,exchange=exchange) as lease:
             return sync_market_history(symbol,client,db_path,owner=lease,exchange=exchange,
-                base_asset=base_asset,quote_asset=quote_asset,page_size=page_size,max_pages=max_pages,collect_trades=collect_trades)
+                base_asset=base_asset,quote_asset=quote_asset,page_size=page_size,max_pages=max_pages,collect_trades=collect_trades,checkpoint=checkpoint,progress=progress)
     symbol = symbol.upper()
     inferred_base,inferred_quote = split_market(symbol)
     base_asset,quote_asset = base_asset or inferred_base,quote_asset or inferred_quote
@@ -138,9 +150,13 @@ def sync_market_history(symbol, client, db_path, *, owner=None, exchange=None,
     pages, inserted, received = 0,0,[]
     try:
         for _ in range(max_pages):
+            if checkpoint:
+                checkpoint()
             with connect(db_path) as connection:
                 fence(connection,exchange,owner)
             raw = client.get_my_trades(symbol,from_id=cursor,limit=page_size)
+            if checkpoint:
+                checkpoint()
             if not isinstance(raw,list) or len(raw)>page_size:
                 raise BinanceReadError("INVALID_PAGE")
             trades = [normalize_trade(trade,symbol) for trade in raw]
@@ -149,6 +165,8 @@ def sync_market_history(symbol, client, db_path, *, owner=None, exchange=None,
                 with connect(db_path) as connection:
                     fence(connection,exchange,owner)
                     _state(connection,exchange,symbol,next_id=cursor,complete=True,status="COMPLETE")
+                    if progress:
+                        progress({"event":"PAGE","symbol":symbol,"inserted":0,"duplicates":0,"pages":1},connection=connection)
                 return {"symbol":symbol,"complete":True,"pages":pages,
                         "inserted":inserted,"next_id":cursor,"trades":received}
             next_cursor = max(trade["trade_id"] for trade in trades)+1
@@ -163,8 +181,11 @@ def sync_market_history(symbol, client, db_path, *, owner=None, exchange=None,
                         "SELECT 1 FROM binance_trades WHERE exchange=? AND symbol=? AND trade_id=?",
                         (exchange,symbol,trade["trade_id"])).fetchone():
                         raise BinanceReadError("INVALID_OVERLAP")
-                inserted += store_page(connection,trades,exchange=exchange,
+                added = store_page(connection,trades,exchange=exchange,
                                        base_asset=base_asset,quote_asset=quote_asset)
+                inserted += added
+                if progress:
+                    progress({"event":"PAGE","symbol":symbol,"inserted":added,"duplicates":len(trades)-added,"pages":1},connection=connection)
                 _state(connection,exchange,symbol,next_id=next_cursor,
                        complete=initial_complete,status="PAGINATING")
             cursor = next_cursor

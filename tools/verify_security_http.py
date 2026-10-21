@@ -186,6 +186,9 @@ def probes():
     with Server() as server:
         with server.client() as client:
             check("anonymous sensitive API",client.get("/api/positions").status_code==401)
+            check("anonymous bootstrap preview",client.post("/api/binance/sync/preview",json={}).status_code==401)
+            check("anonymous sync job status",client.get("/api/binance/sync/jobs/"+"a"*32).status_code==401)
+            check("anonymous sync cancellation",client.post("/api/binance/sync/jobs/"+"a"*32+"/cancel").status_code==401)
             page=client.get("/login")
             check("login CSRF",client.post("/login",data={"password":PASSWORD}).status_code==403)
             response,old_cookie=authenticate(client)
@@ -209,7 +212,13 @@ def probes():
             journal=client.post("/api/journal",json={"symbol":"BTCUSDC","reason":hostile})
             check("stored hostile journal",journal.status_code==200 and client.get("/api/journal").json()[0]["reason"]==hostile)
             check("journal result",client.put(f"/api/journal/{journal.json()['id']}",json={"result_status":"WIN","pnl_percent":2}).status_code==200)
-            check("sync simulated only",client.post("/api/binance/sync").json()["synced"] is True)
+            response=client.post("/api/binance/sync")
+            check("sync simulated accepted asynchronously",response.status_code==202 and response.json()["accepted"] is True)
+            guard=client.headers.pop("X-CSRF-Guard")
+            check("bootstrap preview CSRF",client.post("/api/binance/sync/preview",json={}).status_code==403)
+            check("sync cancellation CSRF",client.post("/api/binance/sync/jobs/"+"a"*32+"/cancel").status_code==403)
+            client.headers["X-CSRF-Guard"]=guard
+            check("malformed sync mode rejected",client.post("/api/binance/sync",json={"mode":"all"}).status_code==422)
             check("destructive default disabled",client.post("/api/admin/reset",json={}).status_code==403)
             check("cross-origin blocked",client.post("/api/watch-candidates",json={"symbol":"BTCUSDC"},headers={"Origin":"https://evil.example"}).status_code==403)
             check("CORS preflight denied","access-control-allow-origin" not in client.options("/api/positions",headers={"Origin":"https://evil.example"}).headers)

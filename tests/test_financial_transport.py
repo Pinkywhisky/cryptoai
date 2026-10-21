@@ -41,6 +41,13 @@ def test_safe_get_retries_with_bounded_backoff(client,monkeypatch,status):
     monkeypatch.setattr(requests,"get",get)
     sleeps=[]
     client.sleep=sleeps.append
+    if status==429:
+        with pytest.raises(BinanceReadError) as info:
+            client.get_my_trades("ABCUSDC")
+        assert info.value.retry_after>=60
+        assert len(calls)==1
+        assert not sleeps
+        return
     assert client.get_my_trades("ABCUSDC")==[]
     assert len(calls)==3
     assert len(sleeps)==2
@@ -153,3 +160,11 @@ def test_invalid_public_price_is_never_a_zero_valuation(client,monkeypatch,price
     monkeypatch.setattr(requests,"get",lambda *a,**k:Response(200,{"symbol":"ABCUSDC","price":price}))
     with pytest.raises(BinanceDataError):
         client.get_market_price("ABCUSDC")
+
+
+def test_http_400_unknown_symbol_is_classified_without_response_leak(client,monkeypatch):
+    monkeypatch.setattr(requests,"get",lambda *a,**k:Response(400,{"code":-1121,"msg":"SYNTHETIC_PRIVATE_SECRET"}))
+    with pytest.raises(BinanceReadError) as info:
+        client.get_my_trades("REMOVEDUSDC")
+    assert info.value.code=="UNKNOWN_SYMBOL"
+    assert "SYNTHETIC_PRIVATE_SECRET" not in str(info.value)

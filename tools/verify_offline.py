@@ -89,7 +89,9 @@ def main():
                  "services/binance_private_client.py","services/binance_trade_history.py",
                  "services/binance_portfolio.py","services/binance_sync.py","services/pnl.py",
                  "services/financial_migrations.py","services/history.py",
-                 "services/personal_data.py","services/market_universe.py"]
+                 "services/personal_data.py","services/market_universe.py",
+                 "services/binance_api_budget.py","services/binance_sync_planner.py",
+                 "services/binance_sync_jobs.py","services/sync_migrations.py","services/sync_models.py"]
         summary={}
         for name in targets:
             filename=str(ROOT/name)

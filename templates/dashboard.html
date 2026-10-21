@@ -90,6 +90,21 @@
           <span id="statusText" class="status-badge">Prêt</span>
           <span id="nextRefreshText" class="status-badge">Prochain refresh : -</span>
           <span id="binanceStatusText" class="status-badge">API Binance privée : -</span>
+          <span id="syncJobStatus" class="status-badge" role="status" aria-live="polite"></span>
+          <button id="syncCancelButton" type="button" hidden>Annuler la synchronisation</button>
+          <button id="syncResumeButton" type="button" hidden>Reprendre</button>
+          <details>
+            <summary>Importer un historique Binance</summary>
+            <p>La synchronisation normale suit les marchés connus et les actifs détenus. Les marchés historiques inconnus nécessitent un import explicite.</p>
+            <label>Marchés connus, séparés par des virgules
+              <input id="syncBootstrapSymbols" type="text" maxlength="120000" placeholder="BTCUSDC, ETHUSDT">
+            </label>
+            <label><input id="syncBootstrapFull" type="checkbox"> Explorer tout le catalogue (coûteux, confirmation requise)</label>
+            <button id="syncBootstrapPreviewButton" type="button">Prévisualiser le coût</button>
+            <p id="syncBootstrapPreview" role="status"></p>
+            <button id="syncBootstrapStart" type="button" disabled>Démarrer l'import historique</button>
+          </details>
+
         </div>
       </section>
 

@@ -36,7 +36,7 @@ def rows(path,table="positions"):
 def test_sold_out_asset_is_discovered_without_current_holdings(tmp_path,prices):
     path=tmp_path/"db.sqlite"
     client=PagedClient({"ABCUSDC":[trade(),trade("SELL",quote="130",identity=2,time=2)]})
-    result=binance_sync.sync_binance_positions(client,path)
+    result=binance_sync.sync_binance_positions(client,path,mode="bootstrap",full_scan=True)
     assert result["synced"]
     assert result["positions"]==[]
     assert result["closed"][0]["quantity"]==0
@@ -148,7 +148,7 @@ def test_partial_market_failure_preserves_reliable_subset(tmp_path,prices):
     assert summary["portfolio_value_usdc"]==230
     assert summary["incomplete_positions_count"]==1
     client.fail=None
-    recovered=binance_sync.sync_binance_positions(client,path)
+    recovered=binance_sync.sync_binance_positions(client,path,symbols=("XYZUSDC",))
     assert recovered["synced"]
     assert binance_sync.get_pnl_summary(path)["unrealized_pnl"]==30
 
@@ -270,7 +270,7 @@ def test_failed_market_without_balance_still_makes_global_realized_incomplete(tm
     client=PagedClient({"ABCUSDC":[trade(),trade("SELL",quote="130",identity=2,time=2)],
                        "XYZUSDC":[]})
     client.fail=lambda symbol,cursor:symbol=="XYZUSDC"
-    result=binance_sync.sync_binance_positions(client,path)
+    result=binance_sync.sync_binance_positions(client,path,mode="bootstrap",full_scan=True)
     assert result["sync_status"]=="PARTIAL"
     summary=binance_sync.get_pnl_summary(path)
     assert summary["realized_pnl"] is None
@@ -368,7 +368,7 @@ def test_alpha_usdt_price_requires_observed_conversion_and_no_invented_spot_pair
         lambda asset:{"symbol":asset,"current_price":2,"alpha_trading_symbol":"ALPHA_1USDT",
                       "ticker":{"lastPrice":"2"}})
     prices["USDTUSDC"]=".99"
-    first=binance_sync.sync_binance_positions(client,path)
+    first=binance_sync.sync_binance_positions(client,path,mode="bootstrap",full_scan=True)
     assert first["positions"][0]["current_value"]==1.98
     assert first["positions"][0]["average_buy_price"] is None
     assert first["positions"][0]["price_status"]=="ESTIMATED"

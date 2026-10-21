@@ -1,10 +1,13 @@
 import os
 import sqlite3
+import threading
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from services.financial_migrations import prepare_financial_migration, apply_financial_schema
+from services.financial_migrations import prepare_financial_migration, apply_financial_schema, _version, FINANCIAL_SCHEMA_VERSION, validate_financial_schema
+from services import sync_migrations
 
 
 DB_PATH = Path(
@@ -25,6 +28,11 @@ RESETTABLE_TABLES = [
     "binance_trade_sync",
     "financial_sync_lock",
     "historical_fx_rates",
+    "binance_job_markets",
+    "binance_sync_jobs",
+    "binance_sync_previews",
+    "binance_market_catalog",
+    "binance_catalog_state",
     "score_snapshots",
     "backtest_results",
     "market_cache",
@@ -45,12 +53,46 @@ def _add_column_if_missing(
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+_INITIALIZE_LOCK = threading.RLock()
+_READY_SCHEMAS = {}
+
+
+def _schema_ready(path):
+    if not path.is_file() or not path.stat().st_size:
+        return False
+    identity=path.stat()
+    key=(str(path.resolve()),identity.st_dev,identity.st_ino)
+    with closing(sqlite3.connect(path.resolve().as_uri()+"?mode=ro",uri=True,timeout=10)) as connection:
+        cookie=connection.execute("PRAGMA schema_version").fetchone()[0]
+        if _version(connection)!=FINANCIAL_SCHEMA_VERSION or sync_migrations.version(connection)!=sync_migrations.SYNC_SCHEMA_VERSION:
+            return False
+        if _READY_SCHEMAS.get(key)==cookie:
+            return True
+        validate_financial_schema(connection)
+        sync_migrations.validate(connection)
+        _READY_SCHEMAS[key]=cookie
+        return True
+
+
 def init_db(db_path: Path | str = DB_PATH, *, allow_financial_migration: bool = False) -> None:
+    # Normal reads only inspect the schema cookie, without DDL or a write lock.
+    path=Path(db_path)
+    if _schema_ready(path):
+        return
+    with _INITIALIZE_LOCK:
+        if not _schema_ready(path):
+            _initialize_db(path,allow_financial_migration=allow_financial_migration)
+            if not _schema_ready(path):
+                raise RuntimeError("Database initialization failed")
+
+
+def _initialize_db(db_path: Path | str = DB_PATH, *, allow_financial_migration: bool = False) -> None:
     path = Path(db_path)
     prepare_financial_migration(path, allow_existing=allow_financial_migration)
+    sync_migrations.prepare(path, allow_existing=allow_financial_migration)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             """
@@ -265,6 +307,7 @@ def init_db(db_path: Path | str = DB_PATH, *, allow_financial_migration: bool = 
             """
         )
         apply_financial_schema(connection)
+        sync_migrations.apply(connection)
         connection.commit()
 
 

@@ -664,9 +664,9 @@ La synchronisation reste exclusivement en lecture : aucun endpoint de passage d'
 
 La première collecte commence à `fromId=0`, jamais au dernier trade existant. Les pages de 1 000 maximum sont enregistrées avec leur curseur dans une même transaction, jusqu'à une page vide explicite. Les reprises repartent du curseur durable ; un chevauchement doit correspondre à des transactions déjà vérifiées. Les doublons contradictoires, pages sans progression et budgets dépassés produisent un état d'erreur explicite. Les transactions héritées sont conservées et recontrôlées lors du premier parcours complet.
 
-Le catalogue Spot est parcouru pour les cotations USDC, USDT, EUR et BTC, même sans solde actuel : les positions déjà vendues sont ainsi recherchées. Les marchés historiques stockés restent interrogés. `CRYPTOAI_HISTORY_SYMBOLS` peut fournir des paires historiques supplémentaires séparées par des virgules, sans modifier le fichier .env. Un marché retiré du catalogue et jamais connu localement ne peut pas être découvert automatiquement ; l'API myTrades exige un symbole. Les historiques indisponibles, cotations non reconnues et conversions manquantes sont signalés. COMPLETE décrit la collecte dans ce périmètre, pas une preuve d'exhaustivité de toute la vie du compte.
+Le bootstrap complet optionnel parcourt le catalogue Spot pour les cotations USDC, USDT, EUR et BTC, même sans solde actuel : les positions déjà vendues sont ainsi recherchées. La synchronisation normale suit le périmètre incrémental documenté dans la section lot 3B. Les marchés historiques stockés restent interrogés. `CRYPTOAI_HISTORY_SYMBOLS` peut fournir des paires historiques supplémentaires séparées par des virgules, sans modifier le fichier .env. Un marché retiré du catalogue et jamais connu localement ne peut pas être découvert automatiquement ; l'API myTrades exige un symbole. Les historiques indisponibles, cotations non reconnues et conversions manquantes sont signalés. COMPLETE décrit la collecte dans ce périmètre, pas une preuve d'exhaustivité de toute la vie du compte.
 
-Les GET utilisent des tentatives et délais bornés. Un 429 avec Retry-After supérieur au budget n'est pas retenté avant ce délai : la tentative s'arrête et restitue l'attente conseillée. Après épuisement des retries, une panne globale, un bannissement ou un problème d'authentification coupe la boucle des marchés. Le débit d'un client est espacé d'au moins 250 ms ; les limites partagées de l'IP restent à respecter. La première collecte de milliers de marchés peut être longue. Les lectures publiques de prix et le catalogue utilisent le même réseau que le client réel/testnet.
+Les GET utilisent des tentatives et délais bornés. Un 429 avec Retry-After supérieur au budget n'est pas retenté avant ce délai : la tentative s'arrête et restitue l'attente conseillée. Après épuisement des retries, une panne globale, un bannissement ou un problème d'authentification coupe la boucle des marchés. Le lot 3B remplace l'espacement fixe par un budget partagé fondé sur les poids, fenêtres publiées et en-têtes observés. La première collecte de milliers de marchés peut être longue. Les lectures publiques de prix et le catalogue utilisent le même réseau que le client réel/testnet.
 
 Un verrou SQLite avec propriétaire et expiration protège les synchronisations entre threads/processus. Chaque écriture de page et publication du portefeuille vérifie le propriétaire. Les pages déjà validées survivent à une interruption. Les soldes et les positions dérivées sont publiés atomiquement après une nouvelle réponse complète du compte. Une liste absente, malformée, un prix manquant ou une analyse indisponible ne vaut jamais fermeture. Seule une quantité confirmée nulle avec historique soldé et complet est classée CLOSED ; les retraits possibles ou historiques incomplets restent explicitement incertains. Les positions manuelles et leurs notes/niveaux ne sont pas écrasées. Les anciennes origines MIXED ne permettent pas de récupérer une composante manuelle déjà perdue avant ce lot.
 
@@ -713,3 +713,91 @@ venv/bin/python -B tools/verify_security_mutations.py --node /chemin/vers/node
 ```
 
 Les mutations travaillent uniquement dans des copies jetables de sources autorisées, vérifient d'abord la référence, puis contrôlent que les originaux n'ont pas changé. Les références comptables couvrent FIFO, frais, cotations multiples, mouvements, inconnus et très petits montants. Les tests d'intégration couvrent reprise, verrou périmé, concurrence, reset protégé, migration non destructive, réseau réel/testnet séparé et réponses FastAPI authentifiées. La sonde HTTP de sécurité reste un complément sur loopback uniquement, avec serveur sans aucune sortie réseau.
+
+## Synchronisation V5.3 — lot 3B
+
+Le bouton « Synchroniser Binance » crée maintenant un travail incrémental et retourne immédiatement HTTP 202. Le travail s'exécute dans un thread déclenché explicitement. SQLite impose un seul travail actif, y compris entre processus et entre réel/testnet ; les écritures financières restent protégées par le lease à propriétaire du lot 3. Aucun service Redis/Celery ni aucune nouvelle dépendance n'est ajouté.
+
+### Première utilisation et couverture
+
+Une synchronisation normale ne parcourt jamais systématiquement le catalogue. Elle suit les marchés historiquement utilisés, les positions Binance, les actifs détenus, les devises de frais connues et les marchés explicitement ajoutés. Les nouveaux frais découverts pendant une collecte peuvent nécessiter l'incrémental suivant pour rechercher l'acquisition de leur devise. Un catalogue de 1 666 marchés ne justifie pas 1 666 appels myTrades à chaque clic.
+
+L'import historique est distinct et volontaire :
+1. Ouvrir « Importer un historique Binance » ; fournir des marchés connus ou utiliser l'historique déjà stocké comme amorce.
+2. Prévisualiser le nombre de marchés, le minimum de requêtes et le poids estimé. Cette étape utilise au plus un catalogue public, aucune requête privée.
+3. L'exploration de tout le catalogue est optionnelle et exige une prévisualisation puis une confirmation explicite. Elle conserve également les anciens marchés stockés et les marchés fournis.
+4. Les pages et curseurs sont enregistrés progressivement. Annuler ou reprendre ne supprime aucun historique validé.
+
+myTrades exige un symbole : les soldes actuels ne révèlent pas les marchés déjà entièrement vendus. Les marchés non explorés restent comptés et l'historique n'est pas déclaré complet par simple absence de solde. Les marchés BREAK ne sont pas supprimés : leur historique est conservé et leur statut est réexaminé. Catalogue et statut sont réévalués après six heures, ou immédiatement lors d'une prévisualisation/collecte utilisant un catalogue renouvelé. Les erreurs transitoires ont une attente de revue de 60 secondes ; les marchés BREAK/non reconnus, six heures. Une reprise explicite peut retenter les marchés concernés ; les suspensions globales de quota restent prioritaires.
+
+La couverture initiale établie et la réactualisation sont deux informations différentes. Un marché auparavant vide peut recevoir ensuite un aller-retour entièrement vendu. L'API expose donc historical_coverage_as_of, markets_unrefreshed, refresh_scope et les marchés encore inexplorés. Si une partie du catalogue n'a pas été réactualisée, le réalisé global non justifiable reste null ; known_realized_pnl conserve le sous-total documenté. Un travail COMPLETED décrit l'exécution de son périmètre, pas une preuve d'exhaustivité actuelle de tout le compte. Un bootstrap complet ultérieur réactualise l'ensemble du périmètre confirmé. Les limites du lot 3 sur funding et conversions historiques restent applicables.
+
+### Quotas communs au cockpit
+
+Tous les transports Binance de l'application passent par binance_api_budget : client privé, prix publics, klines, catalogue, scanner de propositions et Alpha. Les réservations de poids et de requêtes brutes sont atomiques dans SQLite et partagées entre threads/processus utilisant cette base. Les alias Spot api1-4, api-gcp et data-api partagent le même suivi IP que api.binance.com ; le réseau testnet est distinct.
+
+Le transport publie les rateLimits valides dès toute réponse exchangeInfo publique réussie, sans clé Binance et sans requête supplémentaire. REQUEST_WEIGHT et RAW_REQUESTS gardent leurs propres valeurs et intervalles ; ORDERS ne limite pas ces lectures. Les informations officielles remplacent les valeurs de repli, y compris lorsqu'elles sont inférieures. Une table malformée ou sans REQUEST_WEIGHT conserve la dernière politique valable. Si RAW_REQUESTS manque, sa dernière limite publiée est préservée. Les catalogues conservés en cache peuvent initialiser un budget vide, mais jamais remplacer une observation officielle déjà connue. Les réponses plus anciennes sont ignorées ; à instant identique, la limite la plus stricte est retenue. Le cache public regroupe les chargements simultanés à froid.
+
+CRYPTOAI_API_SAFETY configure la fraction maximale utilisable, 0.8 par défaut, entre 0.1 et 0.95. Les replis s'appliquent uniquement tant qu'aucune limite officielle correspondante n'est disponible :
+
+| Budget | Poids/minute avant marge | Requêtes brutes avant marge | Préfixe de configuration |
+| --- | ---: | ---: | --- |
+| Spot réel | 6000 | 61000 / 5 minutes | CRYPTOAI_API_SPOT |
+| Spot testnet | 600 | 600 / minute | CRYPTOAI_API_TESTNET |
+| Alpha | 600 | 600 / minute | CRYPTOAI_API_ALPHA |
+| Wallet accountSnapshot réel | 12000 | 600 / minute | CRYPTOAI_API_SNAPSHOT |
+| Wallet accountSnapshot testnet, non utilisé | 600 | 600 / minute | CRYPTOAI_API_TESTNET_SNAPSHOT |
+
+Pour chaque préfixe : suffixe _WEIGHT_PER_MINUTE ou _RAW_REQUESTS, entier de 1 à 1000000000. Exemple de configuration du processus : CRYPTOAI_API_SPOT_WEIGHT_PER_MINUTE=3000 ; cela fixe le repli, pas un remplacement des limites officielles. Aucune modification du .env n'est nécessaire aux tests. La configuration invalide refuse les nouveaux appels ; les changements de repli conservent la consommation et les suspensions persistées.
+
+Les valeurs Spot 6000 et RAW_REQUESTS 61000/5 minutes correspondent aux exemples publiés par Binance ; la réponse API réelle reste prioritaire. Les replis testnet/Alpha et les plafonds RAW hors Spot sont des politiques locales prudentes. Wallet /sapi/v1/accountSnapshot (poids IP 2400) a son propre budget par endpoint et ses en-têtes X-SAPI-USED-IP-WEIGHT-* ; il ne consomme pas le plafond /api/v3. Aucun autre endpoint Wallet n'est pris en charge par le gestionnaire. Les poids Alpha non documentés restent estimés à 80, sans assimiler leurs éventuels en-têtes Spot aux quotas Alpha.
+
+Les en-têtes X-MBX-USED-WEIGHT-* renseignent la consommation absolue du quota IP, y compris celle d'autres logiciels. Le maximum distant observé et les coûts locaux ne diminuent jamais dans une même fenêtre. Les réservations encore incertaines s'ajoutent à ce maximum, puis sont confirmées par leur propre réponse ; cela évite de conserver un surcomptage une fois les requêtes parallèles terminées. L'absence d'en-tête ou un timeout ne rembourse pas la requête. Des doublons contradictoires utilisent la plus grande valeur valide. Un en-tête d'intervalle inconnu est mesuré sans inventer une limite numérique de 600. Les fenêtres UTC sont renouvelées à leurs bornes, les requêtes en vol sont conservées ; une réponse datée de la fenêtre précédente ne pollue pas la nouvelle. Sans date fiable, l'observation reste prudente dans la fenêtre de réception.
+
+Lorsqu'une nouvelle limite officielle introduit un intervalle non encore contrôlé, les compteurs actifs connus sont conservés prudemment jusqu'à sa première borne, même si cet intervalle est plus court. Cette transition peut temporairement refuser des requêtes : elle évite de remettre la consommation à zéro lors du changement de politique. Sans historique complet ni en-tête distant correspondant, la distribution passée entre intervalles ne peut pas être reconstituée exactement.
+
+Le gestionnaire n'attend pas la fin d'un quota : il refuse avant HTTP avec un délai de reprise. Un cache de cockpit valable est lu sans appel Binance ni réservation. Si un complément de contexte BTC rencontre un quota, la ligne devient indisponible sans décision inventée et sans faire échouer tout le cockpit. Les redirections HTTP ne sont pas suivies, afin d'éviter un second appel non réservé ou la retransmission de paramètres signés. Les estimations d'aperçu utilisent la limite de poids connue la plus contraignante et son intervalle ; elles restent des moyennes théoriques sans prédiction de la consommation extérieure.
+
+Sources : [limites et en-têtes Spot](https://developers.binance.com/en/docs/products/spot/rest-api#limits), [exchangeInfo](https://developers.binance.com/en/docs/catalog/core-trading-spot-trading/api/rest-api/general), [poids des endpoints publics](https://developers.binance.com/en/docs/catalog/core-trading-spot-trading/api/rest-api/market), [limites distinctes /api et /sapi](https://developers.binance.com/en/docs/products/advanced-earn/general-info), [accountSnapshot](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/account).
+
+Un 429 suspend immédiatement les appels du réseau concerné, sans retry immédiat. Un 418 et son Retry-After sont conservés, sans changement de clé ou d'hôte pour les contourner. Sans délai valide : 60 secondes pour 429, trois jours pour 418. Un reset des données métier ne supprime pas ces suspensions. Un dépassement local ou distant place le travail en PAUSED_QUOTA ; la reprise est explicite après le délai, sans requête privée automatique au redémarrage. Les GET 5xx/timeouts conservent seulement leurs retries bornés du lot 3.
+
+Les autres logiciels utilisant la même IP restent hors du contrôle local : les en-têtes observés et la marge réduisent ce risque, sans prétendre coordonner une application externe. Les caches du resolver public et du catalogue de synchronisation restent distincts ; un chargement public supplémentaire du catalogue peut encore survenir à froid, mais il est comptabilisé.
+
+### Suivi, annulation et reprise
+
+- POST /api/binance/sync : incrémental ; réponse 202 avec un identifiant de travail.
+- POST /api/binance/sync/preview : symbols et full_scan ; prévisualisation de bootstrap.
+- POST /api/binance/sync avec mode=bootstrap, preview_id et confirmed si catalogue complet.
+- GET /api/binance/sync/jobs/{id} : progression persistante, marchés traités/restants, pages validées, nouveaux trades, doublons évités, activité et erreurs.
+- POST /api/binance/sync/jobs/{id}/cancel : annulation coopérative.
+- POST /api/binance/sync avec resume_id : reprise du travail stocké.
+- GET /api/binance/status : état financier, travail courant et consommation API, sans appel Binance.
+
+Toutes ces routes conservent l'authentification et les mutations exigent le CSRF. Les identifiants de travail ne sont pas des secrets d'authentification. Aucun secret n'est transmis au JavaScript ou placé dans une URL.
+
+Les pages validées et leurs compteurs sont atomiques avec le curseur. Une interruption pendant la validation d'une page ne l'enregistre pas partiellement. Une reprise ne réinterroge pas les marchés DONE du même travail ; les transactions arrivées après leur traitement sont récupérées lors de l'incrémental suivant. L'interface affiche la couverture ancienne pour éviter de prétendre à un instantané simultané de tous les marchés.
+
+Après crash, un travail dont le lease et le heartbeat ont expiré est marqué INTERRUPTED (au plus 90 secondes d'attente de sécurité) ; aucun appel privé ne redémarre seul. L'arrêt normal signale l'annulation et attend la libération du thread. Un appel HTTP déjà en vol termine dans son timeout avant le prochain contrôle d'annulation. Les dernières données fiables ne sont jamais transformées en clôture pour ce motif.
+
+### SQLite et déploiement futur
+
+L'extension de synchronisation a sa propre version 1 dans sync_schema_migrations, en complément de la version financière 1. Elle ajoute catalogue, états de revue, travaux/marchés, prévisualisations, budget partagé et champs de couverture. Les migrations restent explicitement réservées aux copies isolées autorisées. Même une copie déjà au schéma financier du lot 3 exige cette extension avant emploi.
+
+init_db ne prend plus BEGIN IMMEDIATE sur les ouvertures normales : lecture des versions et du cookie de schéma, validation structurale en cas de changement, connexions refermées. Les migrations restent sous transaction et verrou d'initialisation. La procédure --check / --apply / --check de tools/migrate_financial.py valide les deux versions et conserve une sauvegarde préalable. Ne jamais l'exécuter sur la base personnelle ni supprimer ses WAL/SHM pour contourner une vérification.
+
+Pour un futur Docker Compose : conserver un volume SQLite persistant et un seul écrivain logique de synchronisation. Aucune synchronisation privée n'est lancée au démarrage. Un arrêt brutal interrompt le travail ; la reprise nécessite une action explicite après expiration des leases.
+
+### Reproduction hors réseau
+
+```bash
+venv/bin/python -B tools/verify_offline.py
+venv/bin/python -B tools/verify_offline.py --coverage
+node tests/test_cockpit.js
+venv/bin/python -B tools/verify_sync_mutations.py --node /chemin/vers/node
+venv/bin/python -B tools/verify_financial_mutations.py --node /chemin/vers/node
+venv/bin/python -B tools/verify_security_mutations.py --node /chemin/vers/node
+venv/bin/python -B tools/simulate_sync_cost.py --markets 1666 --known 3
+```
+
+Le simulateur n'utilise aucun secret ni HTTP. Il compare l'orchestrateur et init_db du commit financier 78b2358 au nouveau comportement sur des copies synthétiques ; l'outillage financier partagé courant est identique entre les deux variantes. Il distingue requêtes observées, poids documentés estimés, durée réseau simulée et temps machine mesuré. La comparaison nécessite cet objet Git local ; elle ne fait aucun fetch. Les rapports et sauvegardes de revue restent hors du dépôt.

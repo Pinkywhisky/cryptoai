@@ -8,7 +8,7 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from services import financial_migrations
+from services import financial_migrations, sync_migrations
 from services.history import init_db
 
 TABLES=("positions","binance_trades","binance_balances","binance_sync_state")
@@ -22,12 +22,14 @@ def inspect_copy(path):
         counts={name:connection.execute('SELECT COUNT(*) FROM "'+name+'"').fetchone()[0]
                 for name in TABLES if name in names}
         version=financial_migrations._version(connection)
-        ready=version==financial_migrations.FINANCIAL_SCHEMA_VERSION
+        sync_version=sync_migrations.version(connection)
+        ready=version==financial_migrations.FINANCIAL_SCHEMA_VERSION and sync_version==sync_migrations.SYNC_SCHEMA_VERSION
         if ready:
             financial_migrations.validate_financial_schema(connection)
+            sync_migrations.validate(connection)
         integrity=connection.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
         foreign_keys=not connection.execute("PRAGMA foreign_key_check").fetchall()
-        return {"version":version,"ready":ready,"row_counts":counts,
+        return {"version":version,"sync_version":sync_version,"ready":ready,"row_counts":counts,
                 "integrity_ok":integrity,"foreign_keys_ok":foreign_keys}
 
 
@@ -51,7 +53,7 @@ def run(path, *, apply=False):
         unchanged=all(after["row_counts"].get(table)==count for table,count in before["row_counts"].items())
         return {"success":after["ready"] and after["integrity_ok"] and after["foreign_keys_ok"] and unchanged,
                 "mode":"EXPLICIT_ISOLATED_COPY_MIGRATION","historical_counts_preserved":unchanged,
-                "check":after,"backups_retained":len(list(path.parent.glob(path.name+".pre-finance-v1-*.sqlite")))}
+                "check":after,"backups_retained":len(list(path.parent.glob(path.name+".pre-finance-v1-*.sqlite")))+len(list(path.parent.glob(path.name+".pre-sync-v1-*.sqlite")))}
     except Exception as error:
         # Raw SQLite errors can contain private values; only emit a class.
         return {"success":False,"error":"MIGRATION_OR_CHECK_FAILED",

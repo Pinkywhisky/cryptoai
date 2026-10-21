@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Request, Path, Query
@@ -8,6 +9,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
+from services.binance_private_client import BinanceReadError
+from services.binance_sync_jobs import SyncJobs
+from services.binance_api_budget import ApiBudget
+from services.sync_models import SyncPreview, SyncStart, JobId
 from services.security_logging import security_event
 from services.api_models import PositionCreate, PositionUpdate, WatchCreate, WatchUpdate, JournalCreate, JournalUpdate
 from services.auth import SECURITY_HEADERS, authorize_destructive, install_security, redact_error_message
@@ -66,7 +71,20 @@ RecordIdPath = Annotated[int, Path(ge=1, le=9223372036854775807)]
 HistoryLimit = Annotated[int, Query(ge=1, le=1000)]
 KlineInterval = Annotated[str, Query(pattern=r"^(1s|1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w|1M)$")]
 
-app = FastAPI(title=APP_TITLE, version=APP_VERSION)
+sync_jobs = SyncJobs()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global sync_jobs
+    try:
+        yield
+    finally:
+        await run_in_threadpool(sync_jobs.shutdown)
+        sync_jobs = SyncJobs()
+
+
+app = FastAPI(title=APP_TITLE, version=APP_VERSION, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 install_security(app, templates)
@@ -425,12 +443,26 @@ def _build_market_payload() -> dict:
         if "error" in analysis:
             rows.append({**entry, **analysis, "blocking_factor": analysis.get("error", "Analyse indisponible")})
             continue
-        decision = build_decision(
-            symbol=symbol,
-            analysis=analysis,
-            scan_results=raw_results,
-            positions=positions,
-        )
+        try:
+            decision = build_decision(
+                symbol=symbol,
+                analysis=analysis,
+                scan_results=raw_results,
+                positions=positions,
+            )
+        except Exception as error:
+            # A missing BTC context can require another public request. Quota
+            # refusal must produce an unavailable row, never an invented decision.
+            from services.binance_api_budget import ApiQuotaError
+            cause = error
+            while cause is not None and not isinstance(cause, ApiQuotaError):
+                cause = cause.__cause__
+            if cause is None:
+                raise
+            rows.append({**entry, "error": "Capacite API Binance temporairement indisponible",
+                         "blocking_factor": "Quota API Binance", "analysis_available": False,
+                         "quota": {"code": cause.code, "retry_after": cause.retry_after}})
+            continue
         decisions_by_symbol[symbol] = decision
         save_score_snapshot(symbol, decision, global_score=analysis.get("global_score"))
         rows.append(build_spot_market_row(entry, analysis, decision))
@@ -725,22 +757,52 @@ def api_alerts():
 
 @app.get("/api/binance/status")
 def api_binance_status():
-    return get_binance_status()
+    status=get_binance_status()
+    exchange="BINANCE_SPOT_TESTNET" if status.get("use_testnet") else "BINANCE_SPOT"
+    network="SPOT_TESTNET" if status.get("use_testnet") else "SPOT"
+    return {**status,"job":sync_jobs.get(exchange=exchange),
+            "api_usage":ApiBudget(sync_jobs.path).metrics(network)}
 
 
-@app.post("/api/binance/sync")
-def api_binance_sync():
-    # A durable SQLite lease serializes threads/processes and survives crashes.
+@app.post("/api/binance/sync", status_code=202)
+def api_binance_sync(payload: SyncStart | None = None):
     try:
-        return sync_binance_account()
-    except Exception as exc:
-        logger.warning("Binance synchronization failed (%s)", type(exc).__name__)
-        return {
-            "configured": True, "read_only_mode": True, "synced": False,
-            "sync_status": "ERROR",
-            "message": "Synchronisation Binance indisponible",
-            "last_sync": get_binance_status().get("last_sync"),
-        }
+        return sync_jobs.start(**(payload or SyncStart()).model_dump())
+    except ValueError:
+        return api_error("Invalid synchronization request or expired preview",400)
+
+
+@app.post("/api/binance/sync/preview")
+def api_binance_sync_preview(payload: SyncPreview):
+    try:
+        return sync_jobs.preview(**payload.model_dump())
+    except ValueError:
+        return api_error("Invalid historical markets",400)
+    except BinanceReadError as error:
+        headers=dict(SECURITY_HEADERS)
+        if error.retry_after:
+            headers["Retry-After"]=str(error.retry_after)
+        return JSONResponse({"success":False,"error":"Historical preview unavailable",
+                             "retry_after":error.retry_after},status_code=429 if error.code in {"RATE_LIMIT","HTTP_418","LOCAL_QUOTA","RETRY_LATER"} else 503,headers=headers)
+    except Exception as error:
+        logger.warning("Binance preview unavailable (%s)",type(error).__name__)
+        return api_error("Historical preview unavailable",503)
+
+
+@app.get("/api/binance/sync/jobs/{identifier}")
+def api_binance_sync_job(identifier: JobId):
+    job=sync_jobs.get(identifier)
+    if job is None:
+        return api_error("Synchronization job not found",404)
+    return job
+
+
+@app.post("/api/binance/sync/jobs/{identifier}/cancel")
+def api_binance_sync_cancel(identifier: JobId):
+    try:
+        return sync_jobs.cancel(identifier)
+    except ValueError:
+        return api_error("Synchronization job not found",404)
 
 
 @app.get("/api/binance/balances")

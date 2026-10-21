@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import main
 from auth_client import AuthenticatedClient
 from services import binance_sync
+from services.binance_sync_jobs import SyncJobs
 from test_financial_reference import PagedClient, trade
 from test_financial_sync import balance
 
@@ -12,17 +13,22 @@ def test_financial_sync_and_summary_through_real_protected_routes(tmp_path,monke
     path=tmp_path/"db.sqlite"
     fake=PagedClient({"ABCUSDC":[trade()]},[balance()])
     monkeypatch.setattr(binance_sync,"get_current_price",lambda symbol:"110")
-    monkeypatch.setattr(main,"sync_binance_account",
-                        lambda:binance_sync.sync_binance_account(fake,path))
+    jobs=SyncJobs(path,client_factory=lambda:fake)
+    monkeypatch.setattr(main,"sync_jobs",jobs)
     monkeypatch.setattr(main,"get_pnl_summary",lambda:binance_sync.get_pnl_summary(path))
     monkeypatch.setattr(main,"get_binance_positions",lambda:binance_sync.get_binance_positions(path))
     anonymous=TestClient(main.app,base_url="http://localhost:8000")
     assert anonymous.post("/api/binance/sync").status_code==401
     assert anonymous.get("/api/binance/pnl").status_code==401
     with AuthenticatedClient(main.app) as client:
-        result=client.post("/api/binance/sync")
-        assert result.status_code==200
-        assert result.json()["synced"] is True
+        preview=client.post("/api/binance/sync/preview",json={"symbols":["ABCUSDC"]}).json()
+        result=client.post("/api/binance/sync",json={"mode":"bootstrap","preview_id":preview["id"]})
+        assert result.status_code==202
+        identifier=result.json()["job"]["id"]
+        worker=jobs._threads.get(identifier)
+        if worker:
+            worker.join(5)
+        assert jobs.get(identifier)["status"]=="COMPLETED"
         result=client.get("/api/binance/pnl")
         assert result.status_code==200
         assert result.json()["unrealized_pnl"]==10

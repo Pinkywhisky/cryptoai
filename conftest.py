@@ -74,6 +74,9 @@ def empty_default_database():
     from services.history import reset_database
 
     reset_database(db_path=Path(os.environ["CRYPTOAI_DB_PATH"]))
+    # Quota bans survive production resets; each isolated test starts fresh.
+    with sqlite3.connect(Path(os.environ["CRYPTOAI_DB_PATH"])) as connection:
+        connection.execute("DELETE FROM binance_api_state")
 
 
 def pytest_unconfigure(config):

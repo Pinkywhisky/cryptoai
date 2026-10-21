@@ -1,5 +1,6 @@
 import pandas as pd
 import requests
+from services.binance_api_budget import budgeted_get
 
 
 BASE_URL = "https://api.binance.com"
@@ -38,7 +39,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 100) -> pd.DataFr
     }
 
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = budgeted_get(url, params=params, timeout=10)
         response.raise_for_status()
     except requests.HTTPError as exc:
         message = response.text if "response" in locals() else str(exc)

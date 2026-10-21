@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from services.binance_api_budget import budgeted_get
 
 from services.binance_alpha import MARKET_SOURCE_ALPHA, MARKET_SOURCE_SPOT, fetch_alpha_market_data
 from services.binance_private_client import BinancePrivateClient, BinanceReadError, get_private_client_status, normalize_balances
@@ -54,7 +55,7 @@ def symbol_exists(symbol):
     # A failed request is not evidence of asset disappearance; orchestration
     # relies on an explicit catalog/snapshot and never closes through this helper.
     try:
-        response=requests.get(f"{PUBLIC_BASE_URL}/api/v3/ticker/price",
+        response=budgeted_get(f"{PUBLIC_BASE_URL}/api/v3/ticker/price",
                               params={"symbol":symbol.upper()},timeout=10)
         return response.status_code==200
     except requests.RequestException:
@@ -63,7 +64,7 @@ def symbol_exists(symbol):
 
 def get_current_price(symbol):
     try:
-        response=requests.get(f"{PUBLIC_BASE_URL}/api/v3/ticker/price",
+        response=budgeted_get(f"{PUBLIC_BASE_URL}/api/v3/ticker/price",
                               params={"symbol":symbol.upper()},timeout=10)
         response.raise_for_status()
         value=decimal_value(response.json()["price"],nonnegative=True)
@@ -175,14 +176,17 @@ def cleanup_inactive_binance_positions(active_symbols,dust_symbols=None,db_path=
                 connection.execute("UPDATE positions SET data_status='TEMPORARILY_UNAVAILABLE',price_status='UNAVAILABLE',pnl_status='INCOMPLETE' WHERE id=?",(row["id"],))
 
 
-def sync_binance_positions(client=None,db_path=DB_PATH,*,symbols=(),page_size=1000,max_pages=10000):
+def sync_binance_positions(client=None,db_path=DB_PATH,*,symbols=(),page_size=1000,max_pages=10000,
+                          mode="incremental",full_scan=False,progress=None,should_cancel=None,resume_completed=(),lease_owner=None):
     client=client or BinancePrivateClient()
     if not client.configured:
         return {"positions":[],"dust":[],"synced":False,"sync_status":"NOT_CONFIGURED"}
+    symbols=tuple(s.strip().upper() if isinstance(s,str) else s for s in symbols)
     extras=tuple(filter(None,(value.strip().upper() for value in os.getenv("CRYPTOAI_HISTORY_SYMBOLS","").split(","))))
     return synchronize(client,db_path,get_price=getattr(client,"get_market_price",get_current_price),resolve=resolve_market_symbol,
         get_alpha=fetch_alpha_market_data,threshold=MIN_ACTIVE_POSITION_VALUE_USDC,
-        extra_symbols=tuple(symbols)+extras,page_size=page_size,max_pages=max_pages)
+        extra_symbols=tuple(symbols)+(extras if mode=="incremental" else ()),page_size=page_size,max_pages=max_pages,mode=mode,
+        full_scan=full_scan,progress=progress,should_cancel=should_cancel,resume_completed=resume_completed,lease_owner=lease_owner)
 
 
 def sync_positions_from_binance(client=None,db_path=DB_PATH):
@@ -226,7 +230,10 @@ def get_binance_status(db_path=DB_PATH):
             "sync_status":row["sync_status"] if row else "NEVER",
             "discovery_status":row["discovery_status"] if row else "INCOMPLETE",
             "markets_complete":row["markets_complete"] if row else 0,
-            "markets_total":row["markets_total"] if row else 0}
+            "markets_total":row["markets_total"] if row else 0,
+            "historical_coverage_as_of":row["coverage_as_of"] if row else None,
+            "markets_unrefreshed":row["markets_unrefreshed"] if row else 0,
+            "refresh_scope":row["refresh_scope"] if row else "UNKNOWN"}
 
 
 def get_balances(db_path=DB_PATH):
@@ -304,7 +311,7 @@ def get_pnl_summary(db_path=DB_PATH):
             known=Decimal(0)
             complete=initialized
             if key=="realized_pnl":
-                complete=complete and state["sync_status"]=="COMPLETE" and state["discovery_status"]=="COMPLETE"
+                complete=complete and state["sync_status"]=="COMPLETE" and state["discovery_status"]=="COMPLETE" and state["markets_unrefreshed"]==0
             for row in selection:
                 if row.get("data_status") in {"LEGACY_UNVERIFIED","TEMPORARILY_UNAVAILABLE"}:
                     complete=False
@@ -366,6 +373,9 @@ def get_pnl_summary(db_path=DB_PATH):
                 "cash_fx_cost_unknown_count":foreign_cash,
                 "coverage_scope":"AVAILABLE_AND_STORED_SPOT_MARKETS_USDC_USDT_EUR_BTC",
                 "funding_history_status":"NOT_DOCUMENTED",
+                "historical_coverage_as_of":state["coverage_as_of"] if state else None,
+                "markets_unrefreshed":state["markets_unrefreshed"] if state else 0,
+                "refresh_scope":state["refresh_scope"] if state else "UNKNOWN",
                 "pnl_status":("EXACT" if all(row.get("pnl_status")=="EXACT" for row in rows) else "ESTIMATED") if total is not None else "INCOMPLETE",
                 "valuation_status":"EXACT" if portfolio is not None and all(r["asset"]=="USDC" for r in cash) and all(r.get("price_status")=="EXACT" for r in wallet_values) else "ESTIMATED" if portfolio is not None else "INCOMPLETE",
                 "is_estimated":not initialized or bool(foreign_cash) or total is None or any(row.get("pnl_status")!="EXACT" for row in rows),

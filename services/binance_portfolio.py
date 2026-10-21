@@ -8,12 +8,13 @@ from contextlib import contextmanager
 from services.binance_private_client import (
     ASSET, BinanceReadError, BinanceDataError, normalize_balances)
 from services.binance_trade_history import (
-    EXCHANGE, LeaseLost, connect, fence, now, sync_lease, sync_market_history, exchange_for_client)
+    EXCHANGE, LeaseLost, connect, fence, now, sync_lease, sync_market_history, exchange_for_client, SyncCancelled)
+from services import binance_sync_planner as planner
 from services.pnl import SUPPORTED_QUOTES, calculate_fifo_pnl, decimal_value, split_market
 
 
 CIRCUIT_ERRORS={"RATE_LIMIT","RETRY_LATER","SERVER","TRANSPORT",
-                "HTTP_401","HTTP_403","HTTP_418"}
+                "HTTP_401","HTTP_403","HTTP_418","LOCAL_QUOTA"}
 
 
 def decode_position(row):
@@ -142,9 +143,18 @@ def _previous_asset(row):
 
 
 def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, extra_symbols=(),
-                exchange=None, page_size=1000, max_pages=10000):
+                exchange=None, page_size=1000, max_pages=10000, mode="incremental",
+                full_scan=False, progress=None, should_cancel=None, resume_completed=(), lease_owner=None):
     exchange=exchange or exchange_for_client(client)
-    with monitored_lease(db_path,exchange=exchange) as owner:
+    with monitored_lease(db_path,exchange=exchange,owner=lease_owner) as owner:
+        def checkpoint():
+            if should_cancel and should_cancel():
+                raise SyncCancelled("Synchronization cancelled")
+            with connect(db_path) as connection:
+                fence(connection,exchange,owner)
+            if progress:
+                progress({"event":"HEARTBEAT"})
+        checkpoint()
         initial_balances = normalize_balances(client.get_non_zero_balances())
         with connect(db_path) as connection:
             existing = [dict(row) for row in connection.execute(
@@ -153,18 +163,7 @@ def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, e
                 "SELECT DISTINCT symbol FROM binance_trades WHERE exchange=?",(exchange,))]
         discovery_complete = True
         try:
-            catalog = client.get_spot_markets()
-            if not isinstance(catalog,list) or not catalog:
-                raise BinanceDataError("INVALID_MARKET_CATALOG")
-            for item in catalog:
-                if not isinstance(item,dict) or not all(
-                    isinstance(item.get(k),str) and ASSET.fullmatch(item[k])
-                    for k in ("symbol","base_asset","quote_asset")):
-                    raise BinanceDataError("INVALID_MARKET_CATALOG")
-            if any(item["symbol"]!=item["base_asset"]+item["quote_asset"] for item in catalog):
-                raise BinanceDataError("INVALID_MARKET_CATALOG")
-            if len({item["symbol"] for item in catalog}) != len(catalog):
-                raise BinanceDataError("DUPLICATE_MARKET")
+            catalog, discovery_complete, catalog_fetched = planner.load_catalog(client,db_path,exchange)
         except (BinanceReadError,ValueError,AttributeError) as error:
             if isinstance(error,BinanceReadError) and error.code in CIRCUIT_ERRORS:
                 raise
@@ -202,18 +201,39 @@ def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, e
                 else:
                     unsupported.update(row["symbol"] for row in catalog
                                        if row["base_asset"]==asset and row["quote_asset"] not in SUPPORTED_QUOTES)
-        complete_markets=set()
+        plan=planner.select_markets(db_path,exchange,markets,initial_balances,
+            mode=mode,symbols=extra_symbols,full_scan=full_scan)
+        selected=plan["selected"]
+        if progress:
+            progress({"event":"PLAN","symbols":sorted(selected),"deferred":plan["deferred"]})
         failures=[{"symbol":symbol,"code":"UNRESOLVED_OR_UNSUPPORTED_QUOTE"} for symbol in sorted(unsupported)]
-        for market in sorted(markets.values(),key=lambda row:row["symbol"]):
+        fresh_markets=set(resume_completed)
+        for market in sorted(selected.values(),key=lambda row:row["symbol"]):
+            if market["symbol"] in resume_completed:
+                continue
+            checkpoint()
+            if progress:
+                progress({"event":"MARKET_START","symbol":market["symbol"]})
             try:
-                sync_market_history(market["symbol"],client,db_path,owner=owner,exchange=exchange,
+                result=sync_market_history(market["symbol"],client,db_path,owner=owner,exchange=exchange,
                     base_asset=market["base_asset"],quote_asset=market["quote_asset"],
-                    page_size=page_size,max_pages=max_pages)
-                complete_markets.add(market["symbol"])
+                    page_size=page_size,max_pages=max_pages,checkpoint=checkpoint,progress=progress)
+                planner.record_market(db_path,exchange,market["symbol"],success=True,inserted=result["inserted"])
+                fresh_markets.add(market["symbol"])
+                if progress:
+                    progress({"event":"MARKET","symbol":market["symbol"],"status":"DONE"})
             except BinanceReadError as error:
+                planner.record_market(db_path,exchange,market["symbol"],success=False,error=error.code)
+                if progress:
+                    progress({"event":"MARKET","symbol":market["symbol"],"status":"ERROR","code":error.code})
                 if error.code in CIRCUIT_ERRORS:
                     raise
                 failures.append({"symbol":market["symbol"],"code":error.code})
+        catalog_complete=discovery_complete
+        cov=planner.coverage(db_path,exchange,markets)
+        complete_markets=cov["covered"]
+        discovery_complete=discovery_complete and not cov["unknown"]
+        checkpoint()
         # A fresh complete account response is required before publishing balances.
         balances=normalize_balances(client.get_non_zero_balances())
         trades=read_trades(db_path,exchange)
@@ -273,6 +293,7 @@ def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, e
             return Decimal(1)/inverse if inverse is not None else None
         snapshots=[]
         for asset in sorted(assets):
+            checkpoint()
             balance=by_asset.get(asset)
             quantity=balance["total_decimal"] if balance else "0"
             positive=decimal_value(quantity)>0
@@ -329,7 +350,7 @@ def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, e
             # Fees paid in an asset can originate on any supported market.
             if asset in fee_inventory_assets:
                 relevant=set(markets)
-            history_complete=(discovery_complete and not unsupported and relevant<=complete_markets and source!="BINANCE_ALPHA")
+            history_complete=(catalog_complete and not unsupported and relevant<=complete_markets and source!="BINANCE_ALPHA")
             accounting=calculate_fifo_pnl(by_inventory.get(asset,[]),symbol,current_price,quantity,
                 history_complete=history_complete,historical_rates=rates,valuation_estimated=converted_price,
                 funding_history_complete=False)
@@ -355,7 +376,10 @@ def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, e
                 rate=fx(asset)
                 valuations[asset]=(None if rate is None else decimal_value(balance["total_decimal"])*rate,
                                    "EXACT" if asset=="USDC" else "ESTIMATED" if rate else "UNAVAILABLE")
-        successful=discovery_complete and not unsupported and len(complete_markets)==len(markets)
+        successful=discovery_complete and not unsupported and not failures and set(markets)<=complete_markets
+        unrefreshed=set(markets)-fresh_markets
+        refresh_scope="FULL_CATALOG" if not unrefreshed else "TARGETED" if mode=="bootstrap" else "INCREMENTAL"
+        checkpoint()
         with connect(db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             fence(connection,exchange,owner)
@@ -370,14 +394,16 @@ def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, e
                 AND (binance_asset IN ('USDC','USDT','EUR') OR base_asset IN ('USDC','USDT','EUR'))""",(exchange,))
             positions=[_upsert_position(connection,item,exchange=exchange,owner=owner) for item in snapshots]
             connection.execute("""INSERT INTO exchange_sync_state
-                (exchange,last_sync,sync_status,last_attempt,markets_complete,markets_total,discovery_status)
-                VALUES(?,?,?,?,?,?,?) ON CONFLICT(exchange) DO UPDATE SET
+                (exchange,last_sync,sync_status,last_attempt,markets_complete,markets_total,discovery_status,coverage_as_of,markets_unrefreshed,refresh_scope)
+                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(exchange) DO UPDATE SET
                 last_sync=CASE WHEN excluded.sync_status='COMPLETE' THEN excluded.last_sync ELSE exchange_sync_state.last_sync END,
                 sync_status=excluded.sync_status,last_attempt=excluded.last_attempt,
                 markets_complete=excluded.markets_complete,markets_total=excluded.markets_total,
-                discovery_status=excluded.discovery_status""",
+                discovery_status=excluded.discovery_status,coverage_as_of=excluded.coverage_as_of,
+                markets_unrefreshed=excluded.markets_unrefreshed,refresh_scope=excluded.refresh_scope""",
                 (exchange,now() if successful else None,"COMPLETE" if successful else "PARTIAL",now(),
-                 len(complete_markets),len(markets)+len(unsupported),"COMPLETE" if discovery_complete and not unsupported else "INCOMPLETE"))
+                 len(complete_markets),len(markets)+len(unsupported),"COMPLETE" if discovery_complete and not unsupported else "INCOMPLETE",
+                  cov["as_of"],len(unrefreshed),refresh_scope))
         return {"positions":[p for p in positions if p["status"]=="ACTIVE"],
                 "dust":[{**p,"current_value_usdc":p["current_value"],
                          "reason":f"Valeur inf\u00e9rieure au seuil actif de {threshold:g} USDC"}
@@ -388,15 +414,26 @@ def _synchronize(client, db_path, *, get_price, resolve, get_alpha, threshold, e
                 "discovery_status":"COMPLETE" if discovery_complete and not unsupported else "INCOMPLETE",
                 "market_errors":failures,"public_price_calls":len(cache),"invalid_historical_fx_records":invalid_fx,
                 "coverage_scope":"AVAILABLE_AND_STORED_SPOT_MARKETS_USDC_USDT_EUR_BTC",
+                "mode":mode,"markets_examined":len(fresh_markets),"markets_selected":len(selected),
+                "historical_coverage_as_of":cov["as_of"],"markets_unrefreshed":len(unrefreshed),"refresh_scope":refresh_scope,
+                "markets_deferred":plan["deferred"],"unexplored_markets":len(cov["unknown"]),
+                "unexplored_symbols":sorted(cov["unknown"])[:100],
                 "funding_history_status":"NOT_DOCUMENTED"}
 
 
 @contextmanager
-def monitored_lease(db_path, *, exchange):
-    with sync_lease(db_path,exchange=exchange) as owner:
+def monitored_lease(db_path, *, exchange, owner=None):
+    with sync_lease(db_path,exchange=exchange,owner=owner) as owner:
         try:
             yield owner
         except LeaseLost:
+            raise
+        except SyncCancelled:
+            with connect(db_path) as connection:
+                fence(connection,exchange,owner)
+                connection.execute("""INSERT INTO exchange_sync_state(exchange,sync_status,last_attempt)
+                    VALUES(?,'CANCELLED',?) ON CONFLICT(exchange) DO UPDATE SET
+                    sync_status='CANCELLED',last_attempt=excluded.last_attempt""",(exchange,now()))
             raise
         except BaseException:
             with connect(db_path) as connection:

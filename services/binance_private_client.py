@@ -12,6 +12,7 @@ import requests
 
 from services.config import BinancePrivateConfig, get_binance_private_config
 from services.pnl import decimal_value
+from services.binance_api_budget import ApiBudget, ApiQuotaError, budgeted_get
 
 SPOT_BASE_URL = "https://api.binance.com"
 SPOT_TESTNET_BASE_URL = "https://testnet.binance.vision"
@@ -108,12 +109,14 @@ def normalize_balances(balances):
 
 class BinancePrivateClient:
     def __init__(self, config: BinancePrivateConfig | None = None, *,
-                 max_attempts=3, sleep=time.sleep, min_interval=0.25):
+                 max_attempts=3, sleep=time.sleep, min_interval=0, budget=None):
         self.config = config or get_binance_private_config()
         self.base_url = SPOT_TESTNET_BASE_URL if self.config.use_testnet else SPOT_BASE_URL
         if not 1 <= max_attempts <= 5 or not 0 <= min_interval <= 10:
             raise ValueError("Invalid retry policy")
         self.max_attempts = max_attempts
+        self.budget = budget or ApiBudget()
+        self.request_hook = None
         self.sleep = sleep
         self.min_interval = min_interval
         self._last_request = None
@@ -143,6 +146,8 @@ class BinancePrivateClient:
                     delay = self.min_interval-(time.monotonic()-self._last_request)
                     if delay > 0:
                         self.sleep(delay)
+                if self.request_hook is not None:
+                    self.request_hook()
                 request_params = dict(params or {})
                 headers = {}
                 if signed:
@@ -151,8 +156,10 @@ class BinancePrivateClient:
                     headers["X-MBX-APIKEY"] = self.config.api_key or ""
                 self._last_request = time.monotonic()
                 try:
-                    response = requests.get(self.base_url+path,params=request_params,
+                    response = budgeted_get(self.base_url+path,_budget=self.budget,params=request_params,
                                             headers=headers,timeout=(5,15))
+                except ApiQuotaError as error:
+                    raise BinanceReadError(error.code,retry_after=error.retry_after) from None
                 except (requests.Timeout, requests.ConnectionError):
                     if attempt+1 < self.max_attempts:
                         self.sleep(0.25*2**attempt)
@@ -174,6 +181,13 @@ class BinancePrivateClient:
                     raise BinanceReadError("RATE_LIMIT" if status==429 else "SERVER",
                                            retry_after=max(1,int(wait)))
                 if status >= 400:
+                    if status==400:
+                        try:
+                            error_body=response.json()
+                        except (ValueError,requests.RequestException):
+                            error_body=None
+                        if isinstance(error_body,dict) and error_body.get("code")==-1121:
+                            raise BinanceReadError("UNKNOWN_SYMBOL")
                     raise BinanceReadError("HTTP_"+str(status))
                 try:
                     response.raise_for_status()
@@ -181,7 +195,7 @@ class BinancePrivateClient:
                 except (ValueError,requests.RequestException):
                     raise BinanceDataError("INVALID_JSON_OR_STATUS") from None
                 if isinstance(data,dict) and data.get("code") not in (None,0):
-                    raise BinanceReadError("API_ERROR")
+                    raise BinanceReadError("UNKNOWN_SYMBOL" if data.get("code")==-1121 else "API_ERROR")
                 return data
         raise BinanceReadError()
 
@@ -221,6 +235,7 @@ class BinancePrivateClient:
         data = self._get("/api/v3/exchangeInfo",None,signed=False)
         if not isinstance(data,dict) or not isinstance(data.get("symbols"),list) or not data["symbols"]:
             raise BinanceDataError("INVALID_MARKET_CATALOG")
+        self.catalog_rate_limits = data.get("rateLimits")
         markets = []
         for item in data["symbols"]:
             if not isinstance(item,dict) or not all(isinstance(item.get(name),str) and ASSET.fullmatch(item[name])
@@ -229,7 +244,7 @@ class BinancePrivateClient:
             if item["symbol"]!=item["baseAsset"]+item["quoteAsset"]:
                 raise BinanceDataError("INVALID_MARKET_CATALOG")
             markets.append({"symbol":item["symbol"],"base_asset":item["baseAsset"],
-                            "quote_asset":item["quoteAsset"]})
+                            "quote_asset":item["quoteAsset"],"status":item.get("status","UNKNOWN")})
         if len({row["symbol"] for row in markets}) != len(markets):
             raise BinanceDataError("DUPLICATE_MARKET")
         return markets

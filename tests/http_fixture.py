@@ -66,7 +66,7 @@ main.generate_ai_alerts = lambda *args, **kwargs: [
     {"symbol": payload, "type": "RISK", "severity": "HIGH", "title": payload, "message": payload, "confidence": 50}
 ]
 main.get_pnl_summary = lambda: {"realized_pnl": 0, "usdc_available": 0}
-main.sync_binance_account = lambda: {"synced": True, "read_only_mode": True}
+main.sync_jobs.start = lambda **kwargs: {"accepted": True, "synced": False, "read_only_mode": True}
 personal.resolve_market_symbol = lambda symbol: {
     "valid": True, "symbol": symbol.upper().replace("/", ""), "resolved_symbol": symbol.upper().replace("/", ""),
     "base_asset": symbol, "market_source": "BINANCE_SPOT",

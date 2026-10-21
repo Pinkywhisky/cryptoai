@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 import requests
+from services.binance_api_budget import budgeted_get
 
 
 ALPHA_BASE_URL = "https://www.binance.com"
@@ -81,7 +82,7 @@ def _alpha_trading_symbol(token: dict[str, Any], symbol: str) -> str:
 
 
 def _request_json(url: str, params: dict[str, Any] | None = None) -> Any:
-    response = requests.get(url, params=params, timeout=8)
+    response = budgeted_get(url, params=params, timeout=8)
     response.raise_for_status()
     return response.json()
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from typing import Any
 
 import requests
+from services.binance_api_budget import budgeted_get
 
 from services.binance_alpha import (
     MARKET_SOURCE_ALPHA,
@@ -34,13 +36,15 @@ COMMON_USDC_SYMBOLS = {
 
 _symbol_cache: set[str] | None = None
 _cache_loaded_at = 0.0
+_symbol_cache_lock = threading.RLock()
 logger = logging.getLogger(__name__)
 
 
 def clear_symbol_cache() -> None:
     global _symbol_cache, _cache_loaded_at
-    _symbol_cache = None
-    _cache_loaded_at = 0.0
+    with _symbol_cache_lock:
+        _symbol_cache = None
+        _cache_loaded_at = 0.0
 
 
 def _clean_symbol(symbol: str) -> str:
@@ -72,7 +76,7 @@ def _split_spot_symbol(symbol: str) -> tuple[str, str | None]:
 
 
 def _fetch_exchange_symbols() -> set[str]:
-    response = requests.get(f"{BASE_URL}/api/v3/exchangeInfo", timeout=10)
+    response = budgeted_get(f"{BASE_URL}/api/v3/exchangeInfo", timeout=10)
     response.raise_for_status()
     payload = response.json()
     symbols = payload.get("symbols", [])
@@ -88,9 +92,14 @@ def get_exchange_symbols(force: bool = False) -> set[str]:
     now = time.time()
     if not force and _symbol_cache is not None and now - _cache_loaded_at < CACHE_TTL_SECONDS:
         return _symbol_cache
-    _symbol_cache = _fetch_exchange_symbols()
-    _cache_loaded_at = now
-    return _symbol_cache
+    # Share a cold public catalog fetch across simultaneous cockpit consumers.
+    with _symbol_cache_lock:
+        now = time.time()
+        if not force and _symbol_cache is not None and now - _cache_loaded_at < CACHE_TTL_SECONDS:
+            return _symbol_cache
+        _symbol_cache = _fetch_exchange_symbols()
+        _cache_loaded_at = now
+        return _symbol_cache
 
 
 def validate_symbol(symbol: str, quote_asset: str = "USDC") -> dict[str, Any]:

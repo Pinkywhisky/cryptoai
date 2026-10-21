@@ -712,7 +712,7 @@ def test_journal_and_alerts_api_routes(monkeypatch) -> None:
 
 def test_binance_api_routes(monkeypatch) -> None:
     monkeypatch.setattr(app_module, "get_binance_status", lambda: {"configured": False, "read_only_mode": True, "last_sync": None})
-    monkeypatch.setattr(app_module, "sync_binance_account", lambda: {"synced": False, "message": "API Binance privée non configurée"})
+    monkeypatch.setattr(app_module.sync_jobs, "start", lambda **kwargs: {"synced": False, "message": "API Binance privée non configurée"})
     monkeypatch.setattr(app_module, "get_balances", lambda: [{"asset": "BTC", "total": 0.1}])
     monkeypatch.setattr(app_module, "get_stored_trades", lambda symbol: [{"symbol": symbol, "trade_id": 1}])
     monkeypatch.setattr(app_module, "get_binance_positions", lambda: [{"symbol": "BTCUSDC"}])

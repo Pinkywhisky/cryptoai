@@ -67,8 +67,8 @@ def test_complete_personal_workflow_and_revocation(client, fake_market, monkeypa
     assert client.get("/api/journal").json()[0]["reason"] == marker
     assert client.get("/api/journal/analytics").status_code == 200
     assert client.get("/").status_code == 200
-    monkeypatch.setattr(main, "sync_binance_account", lambda: {"synced": True, "read_only_mode": True})
-    assert client.post("/api/binance/sync").json()["synced"] is True
+    monkeypatch.setattr(main.sync_jobs, "start", lambda **kwargs: {"accepted": True, "read_only_mode": True})
+    assert client.post("/api/binance/sync").json()["accepted"] is True
     assert client.delete(f"/api/watch-candidates/{wid}").status_code == 200
     assert client.get("/api/watch-candidates").json() == []
     assert client.delete(f"/api/positions/{pid}").status_code == 200

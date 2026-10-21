@@ -278,7 +278,8 @@ function guardedClient({ status = 200, origin = "http://localhost:8000", remaini
     autoRefreshTimer: 1,
     refreshDebounceTimer: 2,
     URL,
-    window: { location: {
+    syncPollTimer: null, activeSyncJob: null, syncPreview: null,
+    window: { clearTimeout: (id) => calls.push(["clear-sync-poll", id]), location: {
       origin,
       replace: (url) => calls.push(["redirect", url]),
     } },
@@ -552,7 +553,7 @@ test("financial reliability labels cannot inject API-provided markup", () => {
 test("configured Binance keys are distinguished from a successful synchronization", () => {
   const node = {textContent:""};
   const context = loadFunctions(["formatDateTime","renderBinanceStatus"], {
-    binanceStatusText:node,settingsBinanceStatus:null,
+    binanceStatusText:node,settingsBinanceStatus:null,renderSyncJob() {},
   });
   context.renderBinanceStatus({configured:true,sync_status:"ERROR",last_sync:null});
   assert.match(node.textContent,/configuré/);
@@ -612,4 +613,128 @@ test("a known manual closed subtotal remains visible when other manual results a
     known_manual_realized_pnl_recorded:9,
   });
   assert.match(portfolioSummary.innerHTML,/sous-total déclaré : 9 USDC \(incomplet\)/);
+});
+
+for (const [status, active] of [["QUEUED", true], ["RUNNING", true], ["CANCELLING", true],
+  ["PARTIAL", false], ["COMPLETED", false], ["CANCELLED", false], ["PAUSED_QUOTA", false]]) {
+  test("sync job active classification: " + status, () => {
+    const context = loadFunctions(["syncJobActive"]);
+    assert.equal(context.syncJobActive({ status }), active);
+    assert.equal(context.syncJobActive(null), false);
+  });
+}
+
+test("job progress reports remaining markets and imported trades without claiming completeness", () => {
+  const context = loadFunctions(["syncJobText"], { formatDateTime: (x) => x });
+  const text = context.syncJobText({ status: "PARTIAL", processed: 3, total: 1666,
+    remaining: 1663, inserted: 10, result: { unexplored_markets: 1663 } });
+  assert.match(text, /incomplets/);
+  assert.match(text, /3\/1666/);
+  assert.match(text, /1663 restants/);
+  assert.match(text, /10 nouveaux trades/);
+  assert.match(text, /1663 marchés non explorés/);
+});
+
+test("job quota suspension is explicit and does not report a successful sync", () => {
+  const context = loadFunctions(["syncJobText"], { formatDateTime: (x) => x });
+  const text = context.syncJobText({ status: "PAUSED_QUOTA", retry_at: 120, updated_at: 100 });
+  assert.match(text, /Suspendue par les quotas/);
+  assert.match(text, /reprise après/);
+  assert.doesNotMatch(text, /terminée/);
+});
+
+test("malformed sync counts and hostile unknown statuses do not enter progress text", () => {
+  const context = loadFunctions(["syncJobText"]);
+  const text = context.syncJobText({ status: "<img onerror=alert(1)>", total: "<script>",
+    processed: -1, remaining: NaN, inserted: true });
+  assert.doesNotMatch(text, /img|script/);
+  assert.match(text, /0\/0/);
+});
+
+test("bootstrap preview shows costs and explains the historical discovery limitation", () => {
+  const context = loadFunctions(["bootstrapPreviewText"]);
+  const text = context.bootstrapPreviewText({ symbols: ["AUSDC", "BUSDC"],
+    cost: { private_requests_min: 4, estimated_weight: 80 }, unexplored_markets: 1664 });
+  assert.match(text, /2 marchés/);
+  assert.match(text, /4 requêtes privées/);
+  assert.match(text, /80/);
+  assert.match(text, /pages supplémentaires/);
+  assert.match(text, /positions déjà vendues/);
+});
+
+test("rendered progress uses textContent and exposes cancellation without HTML injection", () => {
+  const node = { textContent: "", hidden: true, disabled: false };
+  let polls = 0;
+  const context = loadFunctions(["syncJobActive", "syncJobText", "renderSyncJob"], {
+    syncJobStatus: node, syncCancelButton: { hidden: true }, syncResumeButton: { hidden: true },
+    syncBootstrapStart: { disabled: false }, syncPreview: null, activeSyncJob: null,
+    binanceSyncButton: {}, settingsSyncButton: {}, setButtonLoading() {},
+    scheduleSyncPoll() { polls += 1; }, formatDateTime: (x) => x,
+  });
+  context.renderSyncJob({ status: "RUNNING", processed: 1, total: 3, remaining: 2, inserted: 1 });
+  assert.match(node.textContent, /1\/3/);
+  assert.equal(context.syncCancelButton.hidden, false);
+  assert.equal(context.syncBootstrapStart.disabled, true);
+  assert.equal(polls, 1);
+});
+
+test("asynchronous sync start returns after acceptance without waiting for completion", async () => {
+  let rendered;
+  const requests = [];
+  const context = loadFunctions(["syncJobActive", "startSyncJob"], {
+    isSyncingBinance: false, activeSyncJob: null, binanceStatusText: { textContent: "" },
+    apiFetch: async (url, options) => { requests.push([url, options]); return { job: { status: "QUEUED" } }; },
+    renderSyncJob: (job) => { rendered = job; },
+  });
+  await context.startSyncJob();
+  assert.equal(rendered.status, "QUEUED");
+  assert.equal(context.isSyncingBinance, false);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], "/api/binance/sync");
+  assert.equal(requests[0][1].method, "POST");
+});
+
+test("poll scheduling deduplicates timers and only polls local status", async () => {
+  let callback;
+  let timers = 0;
+  const urls = [];
+  const context = loadFunctions(["syncJobActive", "scheduleSyncPoll"], {
+    syncPollTimer: null, activeSyncJob: { status: "RUNNING" }, syncJobStatus: { textContent: "" },
+    window: { setTimeout(fn, delay) { callback = fn; timers += 1; assert.equal(delay, 2000); return 42; } },
+    apiFetch: async (url) => { urls.push(url); return { job: { status: "RUNNING" } }; },
+    renderBinanceStatus() {}, loadPersonalData() {}, loadMarket() {},
+  });
+  context.scheduleSyncPoll();
+  context.scheduleSyncPoll();
+  assert.equal(timers, 1);
+  await callback();
+  assert.deepEqual(urls, ["/api/binance/status"]);
+});
+
+test("full bootstrap still requires preview and an explicit browser confirmation", () => {
+  assert.match(source, /syncPreview\.requires_confirmation && !window\.confirm/);
+  assert.match(source, /preview_id: syncPreview\.id/);
+  assert.match(source, /encodeURIComponent\(activeSyncJob\.id\)/);
+  assert.doesNotMatch(source, /localStorage.*(?:api_secret|api_key)/i);
+});
+
+test("session expiry clears a pending synchronization poll", () => {
+  const { context, calls } = guardedClient();
+  context.syncPollTimer = 42;
+  context.activeSyncJob = { id: "private-job" };
+  context.syncPreview = { symbols: ["PRIVATEUSDC"] };
+  context.handleSessionExpired();
+  assert.ok(calls.some((item) => item[0] === "clear-sync-poll" && item[1] === 42));
+  assert.equal(context.syncPollTimer, null);
+  assert.equal(context.activeSyncJob, null);
+  assert.equal(context.syncPreview, null);
+});
+
+test("incremental progress exposes historical coverage date and unrefreshed scope", () => {
+  const context = loadFunctions(["syncJobText"], { formatDateTime: (x) => x });
+  const text = context.syncJobText({ status: "COMPLETED", result: {
+    markets_unrefreshed: 1663, historical_coverage_as_of: "2026-01-01T00:00:00+00:00",
+  } });
+  assert.match(text, /1663 marchés non réactualisés/);
+  assert.match(text, /couverture au 2026-01-01/);
 });

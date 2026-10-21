@@ -233,7 +233,7 @@ def test_destructive_form_posts_password_without_javascript_and_redirects(secure
 
 def test_binance_sync_requires_session_and_csrf_before_any_private_work(secured_app, monkeypatch):
     calls = []
-    monkeypatch.setattr(main, "sync_binance_account", lambda: calls.append(True) or {"synced": True})
+    monkeypatch.setattr(main.sync_jobs, "start", lambda **kwargs: calls.append(True) or {"accepted": True})
     app = secured_app()
     client = TestClient(app, base_url=ORIGIN)
     assert client.post("/api/binance/sync").status_code == 401
@@ -241,7 +241,7 @@ def test_binance_sync_requires_session_and_csrf_before_any_private_work(secured_
     login(client)
     assert client.post("/api/binance/sync", headers={"X-CSRF-Token": "wrong"}).status_code == 403
     assert not calls
-    assert client.post("/api/binance/sync").json()["synced"] is True
+    assert client.post("/api/binance/sync").json()["accepted"] is True
     assert calls == [True]
 
 

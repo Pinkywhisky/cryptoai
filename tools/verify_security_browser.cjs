@@ -151,6 +151,13 @@ async function main() {
   check("reflected API error stays text", await evaluate('document.querySelector("#marketFeedback").textContent.includes("<img") && !document.querySelector("#marketFeedback img")'));
   check("no CSP violations for normal renderers", (await evaluate("violations.length")) === 0);
   check("no application JavaScript exceptions", exceptions.length === 0);
+  check("historical bootstrap is opt-in", await evaluate('!document.querySelector("#syncBootstrapFull").checked && document.querySelector("#syncBootstrapStart").disabled'));
+  await evaluate('renderSyncJob({id:"a".repeat(32),status:"RUNNING",processed:3,total:1666,remaining:1663,inserted:7})');
+  check("real DOM displays background progress and cancellation", await evaluate('document.querySelector("#syncJobStatus").textContent.includes("3/1666") && !document.querySelector("#syncCancelButton").hidden'));
+  await evaluate('renderSyncJob({status:"PARTIAL",result:{markets_unrefreshed:1663,historical_coverage_as_of:"2026-01-01T00:00:00+00:00"}}); if(syncPollTimer!==null) clearTimeout(syncPollTimer); syncPollTimer=null;');
+  check("real DOM distinguishes unrefreshed history", await evaluate('document.querySelector("#syncJobStatus").textContent.includes("1663") && document.querySelector("#syncJobStatus").textContent.includes("couverture")'));
+  await evaluate('document.querySelector("#syncBootstrapPreview").textContent=bootstrapPreviewText({symbols:["ABCUSDC"],cost:{private_requests_min:3,estimated_weight:60},unexplored_markets:1665})');
+  check("real bootstrap preview shows request cost safely", await evaluate('document.querySelector("#syncBootstrapPreview").textContent.includes("60") && !document.querySelector("#syncBootstrapPreview script")'));
   const desktop = path.join(artifacts, "cockpit-desktop.png");
   fs.writeFileSync(desktop, Buffer.from((await page.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false })).data, "base64"));
   await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
