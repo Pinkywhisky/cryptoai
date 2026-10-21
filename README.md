@@ -52,6 +52,106 @@ La clé API doit être en lecture seule uniquement. Ne jamais activer les permis
 
 Si aucune clé n'est configurée, le dashboard et le scan marché continuent de fonctionner. Le statut affichera : `API Binance privée non configurée`.
 
+## Acces personnel V5.3 ? lot 2A
+
+L'application est fermee tant que `CRYPTOAI_AUTH_PASSWORD_HASH` n'est pas configure. Aucun mot de passe par defaut, compte supplementaire ou secret de session persistant n'est cree. La configuration existante `.env` et la base personnelle ne sont pas modifiees par ce lot.
+
+Generer un hash Argon2id avec saisie masquee, puis le fournir uniquement a l'environnement du serveur :
+
+```bash
+export CRYPTOAI_AUTH_PASSWORD_HASH="$(venv/bin/python -B tools/hash_password.py)"
+venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+Le mot de passe (12 a 1024 caracteres) ne figure pas dans la commande ou son historique. Le hash reste cote serveur. Le cockpit local fonctionne sur `http://127.0.0.1:8000` et `http://localhost:8000`. Pour un autre port ou HTTPS, fournir les origines exactes, sans chemin :
+
+```bash
+export CRYPTOAI_ALLOWED_ORIGINS='https://crypto.example.com'
+```
+
+Derriere un reverse proxy HTTPS, configurer Uvicorn pour ne faire confiance aux en-tetes proxy qu'a l'adresse de ce proxy (par exemple `--proxy-headers --forwarded-allow-ips=127.0.0.1`). HTTP est accepte uniquement sur les adresses loopback. Une origine ou un Host inattendu est refuse.
+
+Les sessions revocables sont conservees en memoire, avec un identifiant aleatoire dans un cookie signe par Starlette/itsdangerous. Le cookie est HttpOnly, SameSite=Strict, sans Domain et avec Secure sous HTTPS. La cle de signature est generee en memoire au demarrage. Utiliser un seul worker : les sessions ne sont pas partagees entre processus et un redemarrage deconnecte les navigateurs.
+
+La duree absolue est de 3600 secondes, configurable avec `CRYPTOAI_SESSION_SECONDS` (60 a 86400). Les activites ne prolongent pas cette duree. La deconnexion revoque immediatement la session serveur ; un ancien cookie ne permet plus de revenir. A expiration, le cockpit efface ses donnees affichees et ses formulaires, puis retourne a la connexion. Une reponse API 401 produit le meme comportement ; aucun appel de modification n'est rejoue automatiquement.
+
+Les formulaires de connexion, deconnexion et maintenance utilisent un jeton CSRF aleatoire lie a la session. Les appels JavaScript utilisent l'en-tete fixe non secret `X-CSRF-Guard: 1`, avec controle d'origine/Referer et de Fetch Metadata. Aucune permission CORS n'est accordee : un site tiers ne peut pas obtenir le preflight requis pour cet en-tete. Le JavaScript ne lit aucun cookie, mot de passe ou jeton CSRF de session et ne persiste aucun secret. Les anciens GET qui ecrivent dans le cache ou l'historique demandent aussi cette protection.
+
+Les clients API authentifies peuvent utiliser `X-CSRF-Token` avec le jeton d'un formulaire de leur propre session ; les operations sensibles de maintenance exigent ce jeton, pas seulement l'en-tete fixe. Les champs sensibles ne sont jamais places dans les URL. Les erreurs d'authentification restent generiques et les valeurs de credentials serveur sont masquees dans les erreurs de validation. Les traces brutes des exceptions API ne sont plus journalisees.
+
+Le reset et le nettoyage des symboles invalides sont desactives par defaut. Les activer demande `CRYPTOAI_ALLOW_DESTRUCTIVE=1`, un redemarrage, une session valide, un jeton CSRF valide, la ressaisie du mot de passe et une confirmation explicite `RESET` ou `CLEANUP`. Le formulaire de reset reste desactive tant que cette option n'est pas activee. La reparation des sources, les modifications personnelles et la synchronisation demandent une session et le CSRF ; aucune synchronisation privee n'est automatique.
+
+Les echecs de mot de passe sont limites a cinq par fenetre glissante de 60 secondes, globalement pour le compte personnel (connexion et reautorisation). Les sessions anonymes et authentifiees ont des limites de memoire separees pour ne pas deconnecter l'utilisateur lors de nombreuses ouvertures de la page de connexion.
+
+Dependances ajoutees :
+
+- `itsdangerous>=2.2,<3`, requis pour les sessions signees de [Starlette](https://www.starlette.io/middleware/#sessionmiddleware).
+- `pwdlib[argon2]>=0.3,<0.4`, pour le hachage/verificateur Argon2 recommande par [FastAPI](https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/#install-pwdlib).
+
+Le synchronizer token des formulaires et l'en-tete AJAX suivent les [recommandations CSRF OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html). Aucune primitive de chiffrement, de signature ou de hachage n'est reimplementee.
+
+Les fixtures existantes se connectent vraiment par le formulaire et transmettent le CSRF ; aucun contournement de production n'est ajoute. Les tests de securite utilisent des clients anonymes independants, les vraies routes et le meme middleware. Executer les tests Python et JavaScript avec les commandes de la section Tests. La base reste temporaire, les cles Binance sont neutralisees et le reseau est bloque.
+
+### Inventaire des routes et des effets
+
+Toutes les routes metier, les anciennes routes et la documentation sont privees par defaut. La protection s'applique aussi aux futures routes ; aucune liste d'exceptions metier ne permet de la contourner. Seuls la page de connexion et les assets statiques sont publics.
+
+| Methode | Route | Donnees / effet | Protection supplementaire |
+| --- | --- | --- | --- |
+| GET | `/` | Cockpit, portefeuille, surveillances et formulaires | Session |
+| GET | `/api/watchlist` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/api/analyze/{symbol}` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/api/analyze-multi/{symbol}` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/api/scan` | Univers personnel et ecriture possible cache / historique | Session + CSRF meme en GET |
+| GET | `/api/market` | Univers personnel et ecriture possible cache / historique | Session + CSRF meme en GET |
+| GET | `/api/ai-alerts` | Univers personnel et ecriture possible cache / historique | Session + CSRF meme en GET |
+| GET | `/api/history/{symbol}` | Historique et resultats locaux | Session |
+| GET | `/api/top-momentum` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/api/top-setups` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/api/decision/{symbol}` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/api/decision-v5/{symbol}` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/api/decisions` | Univers personnel et ecriture possible cache / historique | Session + CSRF meme en GET |
+| GET | `/api/score-history/{symbol}` | Historique et resultats locaux | Session |
+| GET | `/api/backtesting/results` | Historique et resultats locaux | Session |
+| GET | `/api/relative-strength/{symbol}` | Univers personnel et ecriture possible cache / historique | Session + CSRF meme en GET |
+| GET | `/api/positions` | Positions et portefeuille personnels | Session |
+| GET | `/api/positions/active` | Positions et portefeuille personnels | Session |
+| GET | `/api/positions/inactive` | Positions et portefeuille personnels | Session |
+| POST | `/api/positions` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| PUT | `/api/positions/{position_id}` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| DELETE | `/api/positions/{position_id}` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| GET | `/api/watch-candidates` | Surveillances personnelles | Session |
+| POST | `/api/watch-candidates` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| PUT | `/api/watch-candidates/{candidate_id}` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| DELETE | `/api/watch-candidates/{candidate_id}` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| GET | `/api/journal` | Journal personnel / statistiques | Session |
+| POST | `/api/journal` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| PUT | `/api/journal/{entry_id}` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| DELETE | `/api/journal/{entry_id}` | Creation / modification / suppression de donnees personnelles | Session + CSRF |
+| GET | `/api/journal/stats` | Journal personnel / statistiques | Session |
+| GET | `/api/journal/analytics` | Journal personnel / statistiques | Session |
+| GET | `/api/alerts` | Alertes sur positions et surveillances | Session |
+| GET | `/api/binance/status` | Donnees du compte Binance et historique stocke | Session |
+| POST | `/api/binance/sync` | Synchronisation privee | Session + CSRF |
+| GET | `/api/binance/balances` | Donnees du compte Binance et historique stocke | Session |
+| GET | `/api/binance/trades/{symbol}` | Donnees du compte Binance et historique stocke | Session |
+| GET | `/api/binance/positions` | Donnees du compte Binance et historique stocke | Session |
+| GET | `/api/binance/pnl` | Donnees du compte Binance et historique stocke | Session |
+| GET | `/api/binance/account-summary` | Donnees du compte Binance et historique stocke | Session |
+| GET | `/api/binance/closed-trades` | Donnees du compte Binance et historique stocke | Session |
+| GET | `/api/binance/dust` | Donnees du compte Binance et historique stocke | Session |
+| POST | `/api/admin/reset` | Suppression de donnees / maintenance destructive | Session + jeton CSRF + activation explicite + confirmation + mot de passe |
+| POST | `/api/admin/cleanup-invalid-symbols` | Suppression de donnees / maintenance destructive | Session + jeton CSRF + activation explicite + confirmation + mot de passe |
+| POST | `/api/admin/repair-market-sources` | Mise a jour des sources de marche personnelles | Session + CSRF |
+| GET | `/analyze/{symbol}` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/scan` | Analyse / selection de marche, contexte personnel selon la route | Session |
+| GET | `/login` | Formulaire de connexion / etat de configuration | Public, aucune donnee personnelle |
+| POST | `/login` | Creation et rotation de session | Jeton CSRF preconnexion + mot de passe + limitation des tentatives |
+| POST | `/logout` | Revocation de session | Session + jeton CSRF |
+| GET | `/api/auth/session` | Etat et duree restante, sans secret | Session |
+| GET/HEAD | `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` | Documentation et schema | Session |
+| GET/HEAD | `/static/*` | JavaScript et CSS applicatifs | Public, aucun fichier personnel |
+
 ## Lancement
 
 ```bash

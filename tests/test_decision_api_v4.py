@@ -1,4 +1,4 @@
-from fastapi.testclient import TestClient
+from tests.auth_client import AuthenticatedClient as TestClient
 
 import main as app_module
 from main import app

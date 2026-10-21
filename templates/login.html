@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connexion - Crypto AI Assistant</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <h1>Crypto AI Assistant</h1>
+        {% if configured %}
+        <p>Connexion a votre espace personnel.</p>
+        {% if expired %}<p role="status">Votre session a expire. Reconnectez-vous.</p>{% endif %}
+        {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+        <form method="post" action="/login">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label>Mot de passe
+            <input type="password" name="password" autocomplete="current-password" required maxlength="1024" autofocus>
+          </label>
+          <button type="submit">Se connecter</button>
+        </form>
+        {% else %}
+        <p role="alert">Acces personnel non configure. Definissez CRYPTOAI_AUTH_PASSWORD_HASH dans l'environnement du serveur, puis redemarrez l'application.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

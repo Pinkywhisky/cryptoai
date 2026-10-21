@@ -266,3 +266,96 @@ test("surveillance management panel uses the same deletion flow as the cockpit",
   assert.equal(received[0], "7");
   assert.equal(received[1], feedback);
 });
+
+
+function guardedClient({ status = 200, origin = "http://localhost:8000", remaining = "3600" } = {}) {
+  const calls = [];
+  const nodes = [{ innerHTML: "PRIVATE_DATA" }, { innerHTML: "PRIVATE_JOURNAL" }];
+  const forms = [{ reset: () => calls.push(["reset-form"]) }];
+  const context = loadFunctions(["apiFetch", "handleSessionExpired", "scheduleSessionExpiry"], {
+    sessionExpired: false,
+    sessionExpiryTimer: 3,
+    autoRefreshTimer: 1,
+    refreshDebounceTimer: 2,
+    URL,
+    window: { location: {
+      origin,
+      replace: (url) => calls.push(["redirect", url]),
+    } },
+    document: {
+      querySelector: () => ({ content: remaining }),
+      querySelectorAll: (selector) => selector.includes("#positionForm") ? forms : nodes,
+    },
+    clearTimeout: (id) => calls.push(["clear-timer", id]),
+    setTimeout: (callback, delay) => { calls.push(["timer", callback, delay]); return 4; },
+    clearFrontendCache: () => calls.push(["clear-cache"]),
+    fetch: async (url, options) => {
+      calls.push(["fetch", url, options]);
+      return {
+        status, ok: status >= 200 && status < 300,
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify(status === 403 ? { error: "CSRF refused" } : { ok: true }),
+      };
+    },
+  });
+  return { context, calls, nodes };
+}
+
+for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
+  test("API " + method + " uses a non-secret CSRF guard and same-origin cookies", async () => {
+    const { context, calls } = guardedClient();
+    await context.apiFetch("/api/positions", {
+      method, credentials: "include", redirect: "follow",
+      headers: { "X-Custom": "kept", "X-CSRF-Guard": "forged" },
+    });
+    const options = calls.find(([operation]) => operation === "fetch")[2];
+    assert.equal(options.headers["X-CSRF-Guard"], "1");
+    assert.equal(options.headers["X-Custom"], "kept");
+    assert.equal(options.headers["X-CSRF-Token"], undefined);
+    assert.equal(options.credentials, "same-origin");
+    assert.equal(options.redirect, "error");
+  });
+}
+
+for (const url of ["https://evil.example/api", "//evil.example/api", "javascript:alert(1)"]) {
+  test("API refuses external target " + url, async () => {
+    const { context, calls } = guardedClient();
+    await assert.rejects(context.apiFetch(url), /externe interdite/);
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("401 erases private UI, resets forms and redirects once without replaying requests", async () => {
+  const { context, calls, nodes } = guardedClient({ status: 401 });
+  await assert.rejects(context.apiFetch("/api/positions"), /Session expiree/);
+  assert.ok(nodes.every((node) => node.innerHTML === ""));
+  assert.ok(calls.some(([operation]) => operation === "reset-form"));
+  assert.ok(calls.some(([operation]) => operation === "clear-cache"));
+  assert.equal(calls.filter(([operation]) => operation === "clear-timer").length, 3);
+  assert.deepEqual(calls.find(([operation]) => operation === "redirect"), ["redirect", "/login?expired=1"]);
+  await assert.rejects(context.apiFetch("/api/positions"), /Session expiree/);
+  assert.equal(calls.filter(([operation]) => operation === "fetch").length, 1);
+});
+
+test("CSRF rejection does not silently replay or log out an authenticated session", async () => {
+  const { context, calls } = guardedClient({ status: 403 });
+  await assert.rejects(context.apiFetch("/api/positions", { method: "POST" }), /CSRF refused/);
+  assert.equal(calls.filter(([operation]) => operation === "fetch").length, 1);
+  assert.equal(calls.some(([operation]) => operation === "redirect"), false);
+});
+
+test("absolute expiry schedules UI clearing even without another API request", () => {
+  const { context, calls, nodes } = guardedClient({ remaining: "60" });
+  context.scheduleSessionExpiry();
+  const timer = calls.find(([operation]) => operation === "timer");
+  assert.equal(timer[2], 60000);
+  timer[1]();
+  assert.ok(nodes.every((node) => node.innerHTML === ""));
+  assert.equal(context.sessionExpired, true);
+});
+
+test("missing expiry metadata closes the UI instead of keeping an indefinite session", () => {
+  const { context } = guardedClient({ remaining: "" });
+  context.scheduleSessionExpiry();
+  assert.equal(context.sessionExpired, true);
+});

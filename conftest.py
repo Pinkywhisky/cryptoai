@@ -26,6 +26,12 @@ def pytest_configure(config):
     patches.setenv("BINANCE_API_SECRET", "")
     patches.setenv("BINANCE_USE_TESTNET", "false")
     patches.setenv("MIN_ACTIVE_POSITION_VALUE_USDC", "1.00")
+    from pwdlib import PasswordHash
+    patches.setenv("CRYPTOAI_AUTH_PASSWORD_HASH", PasswordHash.recommended().hash("test-only-cryptoai-password-2026"))
+    patches.setenv("CRYPTOAI_ALLOWED_ORIGINS", "http://localhost:8000")
+    patches.setenv("CRYPTOAI_SESSION_SECONDS", "3600")
+    patches.setenv("CRYPTOAI_ALLOW_DESTRUCTIVE", "0")
+
 
     if config.option.basetemp is None:
         config.option.basetemp = str(test_root / "pytest")
@@ -74,3 +80,12 @@ def pytest_unconfigure(config):
         directory, patches = state
         patches.undo()
         directory.cleanup()
+
+
+@pytest.fixture
+def enable_destructive(monkeypatch):
+    # Explicit authorization for the two legacy admin regression tests only.
+    from dataclasses import replace
+    import main
+    monkeypatch.setattr(main.app.state.auth, "settings",
+                        replace(main.app.state.auth.settings, allow_destructive=True))

@@ -1,6 +1,6 @@
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
+from tests.auth_client import AuthenticatedClient as TestClient
 
 import services.scanner as scanner
 import main as app_module
@@ -665,14 +665,14 @@ def test_invalid_symbol_create_routes_return_json(monkeypatch) -> None:
     assert position_response.json()["error"].startswith("Symbole invalide")
 
 
-def test_cleanup_invalid_symbols_route(monkeypatch) -> None:
+def test_cleanup_invalid_symbols_route(monkeypatch, enable_destructive) -> None:
     monkeypatch.setattr(
         app_module,
         "cleanup_invalid_symbols",
         lambda: {"removed": 1, "invalid_symbols": ["CKP"]},
     )
 
-    response = client.post("/api/admin/cleanup-invalid-symbols")
+    response = client.post("/api/admin/cleanup-invalid-symbols", json={"confirmation": "CLEANUP", "password": "test-only-cryptoai-password-2026"})
 
     assert response.status_code == 200
     assert response.json()["removed"] == 1
@@ -736,7 +736,7 @@ def test_binance_api_routes(monkeypatch) -> None:
     assert client.get("/api/positions/inactive").json()[0]["symbol"] == "DOGEUSDC"
 
 
-def test_admin_reset_route_clears_database_and_backend_cache(monkeypatch) -> None:
+def test_admin_reset_route_clears_database_and_backend_cache(monkeypatch, enable_destructive) -> None:
     def fake_reset_database():
         return {"positions": {"existed": True, "deleted": 2}}
 
@@ -752,7 +752,7 @@ def test_admin_reset_route_clears_database_and_backend_cache(monkeypatch) -> Non
     monkeypatch.setattr(app_module, "reset_database", fake_reset_database)
     monkeypatch.setattr(app_module.scanner, "reset_scan_cache", fake_reset_scan_cache)
 
-    response = client.post("/api/admin/reset?reset_watchlist=true")
+    response = client.post("/api/admin/reset?reset_watchlist=true", json={"confirmation": "RESET", "password": "test-only-cryptoai-password-2026"})
 
     assert response.status_code == 200
     payload = response.json()
@@ -798,7 +798,7 @@ def test_dashboard_js_contains_badges_and_binance_sync() -> None:
     assert "document.querySelector(`#${buttonId}`)?.addEventListener" in content
     assert "Retirer" in content
     assert "loadMarket(true)" in content
-    assert "/api/admin/reset" in content
+    assert "#adminResetForm" in content
     assert "closeActionMenus" in content
     assert "event.key === \"Escape\"" in content
     assert "trendClass" in content

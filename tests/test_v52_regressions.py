@@ -5,7 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 
 import pytest
-from fastapi.testclient import TestClient
+from tests.auth_client import AuthenticatedClient as TestClient
 
 import main
 import services.decision_engine as engine

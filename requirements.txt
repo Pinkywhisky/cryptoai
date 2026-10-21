@@ -7,3 +7,5 @@ httpx
 pytest
 jinja2
 python-dotenv
+itsdangerous>=2.2,<3
+pwdlib[argon2]>=0.3,<0.4

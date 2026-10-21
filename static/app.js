@@ -61,6 +61,8 @@ const watchForm = document.querySelector("#watchForm");
 const journalForm = document.querySelector("#journalForm");
 
 // --- ÉTAT GLOBAL DE L'APPLICATION ---
+let sessionExpired = false;
+let sessionExpiryTimer = null;
 let latestRows = [];
 let latestPositions = [];
 let latestWatchCandidates = [];
@@ -560,11 +562,45 @@ function marketContextText(item) {
   return "Contexte neutre : privilégier la confirmation du volume et du momentum.";
 }
 
+function scheduleSessionExpiry() {
+  const remaining = Number(document.querySelector('meta[name="session-expires-in"]')?.content ?? 0);
+  if (!Number.isFinite(remaining) || remaining <= 0) {
+    handleSessionExpired();
+    return;
+  }
+  sessionExpiryTimer = setTimeout(handleSessionExpired, remaining * 1000);
+}
+
+function handleSessionExpired() {
+  if (sessionExpired) return;
+  sessionExpired = true;
+  clearTimeout(autoRefreshTimer);
+  clearTimeout(refreshDebounceTimer);
+  clearTimeout(sessionExpiryTimer);
+  clearFrontendCache();
+  document.querySelectorAll("#resultsBody, #mobileCards, #positionsBody, #watchBody, #journalList, #journalStats, #aiAlertsList, #portfolioSummary, #detailContent")
+    .forEach((element) => { element.innerHTML = ""; });
+  document.querySelectorAll("#positionForm, #watchForm, #quickWatchForm, #journalForm, #adminResetForm")
+    .forEach((form) => form.reset());
+  window.location.replace("/login?expired=1");
+}
+
 async function apiFetch(url, options = {}) {
+  if (sessionExpired) throw new Error("Session expiree. Reconnectez-vous.");
+  if (new URL(url, window.location.origin).origin !== window.location.origin) {
+    throw new Error("Requete externe interdite.");
+  }
+  const headers = { "Content-Type": "application/json", ...options.headers, "X-CSRF-Guard": "1" };
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
+    credentials: "same-origin",
+    redirect: "error",
   });
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expiree. Reconnectez-vous.");
+  }
   const contentType = response.headers.get("content-type") || "";
   const text = await response.text();
   let payload = null;
@@ -1707,22 +1743,9 @@ binanceSyncButton.addEventListener("click", async () => {
   }
 });
 
-adminResetButton.addEventListener("click", async () => {
-  const confirmed = window.confirm(
-    "Réinitialiser les données locales ? Le marché reviendra depuis les surveillances, positions et propositions live."
-  );
-  if (!confirmed) return;
-  adminResetButton.disabled = true;
-  statusText.textContent = "Reset local en cours...";
-  try {
-    await apiFetch("/api/admin/reset?reset_watchlist=false", { method: "POST" });
-    clearFrontendCache();
-    await refreshAll(true);
-    statusText.textContent = "Reset local terminé";
-  } catch (error) {
-    statusText.textContent = error.message;
-  } finally {
-    adminResetButton.disabled = false;
+document.querySelector("#adminResetForm")?.addEventListener("submit", (event) => {
+  if (!window.confirm("Supprimer les donnees locales ? Cette operation est irreversible.")) {
+    event.preventDefault();
   }
 });
 
@@ -1898,6 +1921,8 @@ journalList.addEventListener("click", async (event) => {
 
 // --- ENCLENCHEMENT DE L'APPLICATION ---
 async function initDashboard() {
+  scheduleSessionExpiry();
+  if (sessionExpired) return;
   applyDeviceMode();
   statusText.textContent = "Chargement du marché...";
   if (mobileStatusText) mobileStatusText.textContent = "Chargement...";
@@ -1921,4 +1946,9 @@ symbolInput?.addEventListener("input", () => {
   } else {
     modeSelect.value = "symbol";
   }
+});
+
+
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) window.location.reload();
 });

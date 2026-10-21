@@ -2,9 +2,12 @@ import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
+
+from services.auth import SECURITY_HEADERS, authorize_destructive, install_security, redact_error_message
 
 import services.scanner as scanner
 from services.backtesting import list_backtest_results
@@ -57,6 +60,7 @@ APP_TITLE = f"Crypto AI Assistant v{APP_VERSION}"
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+install_security(app, templates)
 init_db()
 sync_in_progress = False
 logger = logging.getLogger("crypto_ai.watchlist")
@@ -65,7 +69,8 @@ logger = logging.getLogger("crypto_ai.watchlist")
 def api_error(message: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
-        content={"success": False, "error": message},
+        content={"success": False, "error": redact_error_message(message)},
+        headers=SECURITY_HEADERS,
     )
 
 
@@ -77,7 +82,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def api_exception_handler(request: Request, exc: Exception):
     if request.url.path.startswith("/api/"):
-        logger.exception("Unhandled API error on %s", request.url.path)
+        logger.error("Unhandled API error")
         return api_error("Internal server error", status_code=500)
     raise exc
 
@@ -94,7 +99,12 @@ def home(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"title": APP_TITLE, "app_version": APP_VERSION},
+        context={
+            "title": APP_TITLE, "app_version": APP_VERSION,
+            "csrf_token": request.state.auth_session.csrf,
+            "session_seconds": max(0, int(request.state.auth_session.expires - request.app.state.auth.clock())),
+            "destructive_enabled": request.app.state.auth.settings.allow_destructive,
+        },
     )
 
 
@@ -108,7 +118,7 @@ def api_analyze(symbol: str, interval: str = "1h"):
     try:
         return scanner.analyze_symbol(symbol=symbol, interval=interval, limit=120)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail="Analyse indisponible") from None
 
 
 @app.get("/api/analyze-multi/{symbol}")
@@ -123,7 +133,7 @@ def api_analyze_multi(symbol: str):
         )
         return analysis
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail="Analyse indisponible") from None
 
 
 @app.get("/api/scan")
@@ -497,7 +507,7 @@ def api_decision(symbol: str):
             positions=positions,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail="Analyse indisponible") from None
 
 
 @app.get("/api/decision-v5/{symbol}")
@@ -518,7 +528,7 @@ def api_decision_v5(symbol: str):
             btc_analysis=btc_analysis,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail="Analyse indisponible") from None
 
 
 @app.get("/api/decisions")
@@ -584,7 +594,7 @@ def api_create_position(payload: dict):
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
     except Exception:
-        logger.exception("Position creation failed")
+        logger.error("Position creation failed")
         return api_error("Unable to add position", status_code=500)
 
 
@@ -598,7 +608,7 @@ def api_update_position(position_id: int, payload: dict):
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
     except Exception:
-        logger.exception("Position update failed")
+        logger.error("Position update failed")
         return api_error("Unable to update position", status_code=500)
 
 
@@ -621,10 +631,10 @@ def api_create_watch_candidate(payload: dict):
         logger.info("Watch candidate added: %s", candidate.get("symbol"))
         return candidate
     except ValueError as exc:
-        logger.info("Watch candidate rejected: %s", exc)
+        logger.info("Watch candidate rejected")
         return api_error(str(exc), status_code=400)
     except Exception as exc:
-        logger.exception("Watch candidate creation failed")
+        logger.error("Watch candidate creation failed")
         return api_error("Unable to add watch candidate", status_code=500)
 
 
@@ -637,10 +647,10 @@ def api_update_watch_candidate(candidate_id: int, payload: dict):
         logger.info("Watch candidate updated: %s", candidate.get("symbol"))
         return candidate
     except ValueError as exc:
-        logger.info("Watch candidate update rejected: %s", exc)
+        logger.info("Watch candidate update rejected")
         return api_error(str(exc), status_code=400)
     except Exception:
-        logger.exception("Watch candidate update failed")
+        logger.error("Watch candidate update failed")
         return api_error("Unable to update watch candidate", status_code=500)
 
 
@@ -727,7 +737,7 @@ def api_binance_sync():
             "configured": True,
             "read_only_mode": True,
             "synced": False,
-            "message": str(exc),
+            "message": "Synchronisation Binance indisponible",
             "last_sync": get_binance_status().get("last_sync"),
         }
     finally:
@@ -770,12 +780,15 @@ def api_binance_dust():
 
 
 @app.post("/api/admin/reset")
-def api_admin_reset(reset_watchlist: bool = False):
+async def api_admin_reset(request: Request, reset_watchlist: bool = False):
     global sync_in_progress
-    table_summary = reset_database()
-    cache_summary = scanner.reset_scan_cache(reset_watchlist=reset_watchlist)
+    await authorize_destructive(request, "RESET")
+    table_summary = await run_in_threadpool(reset_database)
+    cache_summary = await run_in_threadpool(scanner.reset_scan_cache, reset_watchlist=reset_watchlist)
     sync_in_progress = False
 
+    if request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+        return RedirectResponse("/", status_code=303)
     return {
         "reset": True,
         "tables": table_summary,
@@ -791,8 +804,9 @@ def api_admin_reset(reset_watchlist: bool = False):
 
 
 @app.post("/api/admin/cleanup-invalid-symbols")
-def api_cleanup_invalid_symbols():
-    return cleanup_invalid_symbols()
+async def api_cleanup_invalid_symbols(request: Request):
+    await authorize_destructive(request, "CLEANUP")
+    return await run_in_threadpool(cleanup_invalid_symbols)
 
 
 @app.post("/api/admin/repair-market-sources")

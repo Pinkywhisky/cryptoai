@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
+    <meta name="session-expires-in" content="{{ session_seconds }}">
     <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
   </head>
   <body>
@@ -33,6 +34,10 @@
           <button id="mobileJournalButton" type="button">Journal</button>
           <button id="mobileAlertsButton" type="button">Alertes</button>
           <button id="mobileSettingsButton" type="button">Parametres</button>
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Deconnexion</button>
+          </form>
         </div>
       </nav>
       <header class="topbar">
@@ -43,6 +48,10 @@
         <nav class="top-actions primary-nav" aria-label="Navigation principale">
           <button id="journalModalButton" type="button">Journal</button>
           <button id="settingsModalButton" type="button">Parametres</button>
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Deconnexion</button>
+          </form>
         </nav>
         <div class="legacy-actions" hidden>
           <div class="action-menu">
@@ -341,9 +350,17 @@
             <div class="detail-box danger-zone">
               <h3>Maintenance locale</h3>
               <p>Le reset supprime les données locales et conserve les données marché live via Binance public.</p>
-              <div class="settings-actions">
-                <button id="adminResetButton" type="button">Reset DB / cache</button>
-              </div>
+              {% if not destructive_enabled %}<p>Operations destructives desactivees par configuration.</p>{% endif %}
+              <form id="adminResetForm" method="post" action="/api/admin/reset?reset_watchlist=false" class="settings-actions">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="confirmation" value="RESET">
+                {% if destructive_enabled %}
+                <label>Confirmez votre mot de passe
+                  <input type="password" name="password" autocomplete="current-password" required maxlength="1024">
+                </label>
+                {% endif %}
+                <button id="adminResetButton" type="submit" {% if not destructive_enabled %}disabled{% endif %}>Reset DB / cache</button>
+              </form>
             </div>
           </div>
         </div>
