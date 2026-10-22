@@ -136,7 +136,7 @@ def test_watch_candidate_allows_alpha_symbol(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         personal_data,
         "get_market_snapshot",
-        lambda symbol: {
+        lambda symbol, **kwargs: {
             "valid": True,
             "symbol": "CKP",
             "current_price": 2,

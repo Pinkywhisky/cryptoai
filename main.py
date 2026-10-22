@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from services.binance_private_client import BinanceReadError
 from services.binance_sync_jobs import SyncJobs
 from services.binance_api_budget import ApiBudget
+from services.market_data_errors import MarketDataError
 from services.sync_models import SyncPreview, SyncStart, JobId
 from services.security_logging import security_event
 from services.api_models import PositionCreate, PositionUpdate, WatchCreate, WatchUpdate, JournalCreate, JournalUpdate
@@ -38,7 +39,10 @@ from services.decision_engine import build_decision, build_decision_v5, build_de
 from services.history import get_symbol_history, init_db, reset_database
 from services.journal_analytics import compute_journal_analytics, compute_winrate
 from services.market_universe import get_market_universe
-from services.market_cache import get_market_payload_cache, save_market_payload
+from services.market_cache import (
+    get_market_payload_for_refresh as get_market_payload_cache,
+    save_market_payload, save_alpha_refresh,
+)
 from services.opportunity_scanner import (
     get_market_candidates,
     is_constructive_opportunity,
@@ -134,6 +138,43 @@ def home(request: Request):
             "destructive_enabled": request.app.state.auth.settings.allow_destructive,
         },
     )
+
+
+def market_data_error(error: MarketDataError) -> JSONResponse:
+    headers = dict(SECURITY_HEADERS)
+    if error.retry_after:
+        headers["Retry-After"] = str(error.retry_after)
+    status = 429 if error.code == "QUOTA" else 400 if error.code == "AMBIGUOUS_SYMBOL" else 503
+    return JSONResponse({"success": False, **error.payload()}, status_code=status, headers=headers)
+
+
+@app.get("/api/alpha/candidates")
+def alpha_candidates(symbol: str = Query(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$")):
+    from services.binance_alpha import get_alpha_candidates
+    try:
+        candidates = get_alpha_candidates(symbol)
+        return {"symbol": symbol.upper(), "candidates": candidates,
+                "selection_required": len(candidates) > 1, "persistence_supported": False}
+    except MarketDataError as error:
+        return market_data_error(error)
+
+
+@app.get("/api/alpha/quote-preview")
+def alpha_quote_preview(
+    symbol: str = Query(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$"),
+    alpha_id: str | None = Query(default=None, max_length=20, pattern=r"^ALPHA_[0-9]{1,12}$"),
+    chain_id: str | None = Query(default=None, max_length=100),
+    contract_address: str | None = Query(default=None, max_length=200),
+    verify_conflict: bool = False,
+):
+    # Read-only explicit identity preview. Never updates a historical position
+    # or persists a watch selection until the storage/UI contract is extended.
+    from services.binance_alpha import fetch_alpha_ticker
+    if alpha_id is None and (chain_id is not None or contract_address is not None):
+        return market_data_error(MarketDataError("INVALID_CONFIGURATION"))
+    identity = {"alphaId": alpha_id, "chainId": chain_id, "contractAddress": contract_address} if alpha_id else None
+    return {**fetch_alpha_ticker(symbol, identity=identity, verify_conflict=verify_conflict),
+            "selection_persisted": False, "usage": "PREVIEW_ONLY"}
 
 
 @app.get("/api/watchlist")
@@ -265,14 +306,20 @@ def build_alpha_market_row(entry: dict) -> dict:
     watch_info = entry.get("watch_info") or {}
     source_info = position_info if position_info.get("market_source") else watch_info
     current_price = position_info.get("current_price") or watch_info.get("current_price")
-    score = source_info.get("global_score")
-    trend = source_info.get("global_trend") or "NEUTRAL"
+    market_data = source_info.get("market_data")
+    if market_data:
+        # A synced position retains its dated USDC accounting snapshot. The
+        # cockpit quote comes from today's Alpha response, in its native quote.
+        current_price = (market_data.get("last_known_price")
+                         if market_data.get("state") in {"FRESH", "PARTIAL"} else None)
+    score = source_info.get("global_score") if current_price is not None else None
+    trend = (source_info.get("global_trend") or "NEUTRAL") if current_price is not None else "UNKNOWN"
     message = source_info.get("market_error") or "Analyse Alpha partielle"
     confidence = _confidence_from_score(score)
     logger.info(
-        "[MARKET] Alpha row %s price=%s score=%s trend=%s",
+        "[MARKET] Alpha row %s state=%s score=%s trend=%s",
         entry.get("symbol"),
-        current_price,
+        (market_data or {}).get("state", "UNKNOWN"),
         score,
         trend,
     )
@@ -281,7 +328,9 @@ def build_alpha_market_row(entry: dict) -> dict:
         "symbol": entry["symbol"],
         "analysis_available": current_price is not None,
         "limited_analysis": True,
-        "is_valid_symbol": True,
+        "market_data": market_data,
+        "price_quote_asset": (market_data or {}).get("last_known_price_quote_asset"),
+        "is_valid_symbol": source_info.get("is_valid_symbol", True),
         "current_price": current_price,
         "global_score": score,
         "global_signal": "SURVEILLANCE",
@@ -357,6 +406,7 @@ def _analysis_unavailable_row(entry: dict) -> dict:
         **entry,
         "symbol": entry["symbol"],
         "error": message,
+        "market_data": source_info.get("market_data"),
         "analysis_available": False,
         "is_valid_symbol": position_info.get("is_valid_symbol", market_source == "BINANCE_ALPHA"),
         "current_price": current_price,
@@ -498,12 +548,46 @@ def _build_market_payload() -> dict:
     }
 
 
+def _refresh_cached_alpha(cached: dict) -> dict | None:
+    from services.personal_data import enrich_position, enrich_watch_candidate
+
+    # Read the local business sources, then refresh Alpha only. An Alpha outage
+    # must not trigger repeated full Spot scans at each retry deadline.
+    fx_rates = {}
+    positions = [enrich_position(row, fx_rates=fx_rates)
+                 for row in _list_positions_for_decisions(enrich=False)
+                 if row.get("market_source") == "BINANCE_ALPHA"]
+    watches = [enrich_watch_candidate(row) for row in list_watch_candidates(enrich=False)
+               if row.get("market_source") == "BINANCE_ALPHA"]
+    alpha_rows = {entry["symbol"]: build_alpha_market_row(entry)
+                  for entry in get_market_universe(positions=positions, watch_candidates=watches)}
+    previous_alpha = {row["symbol"] for row in cached.get("results", [])
+                      if "BINANCE_ALPHA" in row.get("sources", [])}
+    if previous_alpha != set(alpha_rows):
+        return None  # Business sources changed: rebuild from the current universe.
+    rows = [row for row in cached.get("results", []) if "BINANCE_ALPHA" not in row.get("sources", [])]
+    rows.extend(alpha_rows.values())
+    rows.sort(key=_market_priority)
+    universe = [{key: row.get(key) for key in (
+        "symbol", "sources", "badges", "priority", "position_info", "watch_info", "opportunity_info")}
+        for row in rows]
+    payload = {**cached, "results": rows, "universe": universe,
+               "counts": {**cached.get("counts", {}), "total": len(rows),
+                          "positions": sum("POSITION" in row.get("sources", []) for row in rows),
+                          "watch_candidates": sum("WATCH_CANDIDATE" in row.get("sources", []) for row in rows)}}
+    return save_alpha_refresh(payload)
+
+
 @app.get("/api/market")
 def api_market(force: bool = False):
     if not force:
         cached = get_market_payload_cache()
         if cached and cached.get("results"):
-            return cached
+            if not cached.get("alpha_refresh_required"):
+                return cached
+            refreshed = _refresh_cached_alpha(cached)
+            if refreshed is not None:
+                return refreshed
 
     payload = _build_market_payload()
     if payload.get("results"):
@@ -633,6 +717,8 @@ def api_inactive_positions():
 def api_create_position(payload: PositionCreate, request: Request):
     try:
         return create_position(payload.payload())
+    except MarketDataError as error:
+        return market_data_error(error)
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
     except Exception as exc:
@@ -647,6 +733,8 @@ def api_update_position(position_id: RecordIdPath, payload: PositionUpdate, requ
         if not position:
             return api_error("Position not found", status_code=404)
         return position
+    except MarketDataError as error:
+        return market_data_error(error)
     except ValueError as exc:
         return api_error(str(exc), status_code=400)
     except Exception as exc:
@@ -672,6 +760,8 @@ def api_create_watch_candidate(payload: WatchCreate, request: Request):
         candidate = create_watch_candidate(payload.payload())
         logger.info("Watch candidate added: %s", candidate.get("symbol"))
         return candidate
+    except MarketDataError as error:
+        return market_data_error(error)
     except ValueError as exc:
         logger.info("Watch candidate rejected")
         return api_error(str(exc), status_code=400)
@@ -688,6 +778,8 @@ def api_update_watch_candidate(candidate_id: RecordIdPath, payload: WatchUpdate,
             return api_error("Watch candidate not found", status_code=404)
         logger.info("Watch candidate updated: %s", candidate.get("symbol"))
         return candidate
+    except MarketDataError as error:
+        return market_data_error(error)
     except ValueError as exc:
         logger.info("Watch candidate update rejected")
         return api_error(str(exc), status_code=400)

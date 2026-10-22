@@ -2,18 +2,19 @@ from services import binance_alpha
 
 
 def test_alpha_token_recognized_and_price_returned(monkeypatch):
-    monkeypatch.setattr(binance_alpha, "_tokens_cache", None)
-    monkeypatch.setattr(binance_alpha, "_ticker_cache", {})
-    monkeypatch.setattr(binance_alpha, "_candles_cache", {})
+    binance_alpha.clear_alpha_cache()
 
     def fake_request_json(url, params=None):
         if "token/list" in url:
             return {"data": [{"symbol": "CKP", "alphaId": "ALPHA_999"}]}
+        if "get-exchange-info" in url:
+            return {"data": {"symbols": [{"baseAsset": "ALPHA_999", "quoteAsset": "USDT", "symbol": "ALPHA_999USDT", "status": "TRADING"}]}}
         if "klines" in url:
             assert params["symbol"] == "ALPHA_999USDT"
+            now_ms = int(binance_alpha._clock()*1000)
             return {
                 "data": [
-                    [str(i), "1", "1.2", "0.9", str(1 + i / 100), "100", str(i + 1), "1000", "5", "50", "500", 0]
+                    [str(now_ms-(121-i)*3600000), "1", "3", "0.9", str(1 + i / 100), "100", str(now_ms-(120-i)*3600000), "1000", "5", "50", "500", 0]
                     for i in range(1, 121)
                 ]
             }
@@ -33,9 +34,7 @@ def test_alpha_token_recognized_and_price_returned(monkeypatch):
 
 
 def test_alpha_symbol_strips_usdc_and_keeps_native_symbol(monkeypatch):
-    monkeypatch.setattr(binance_alpha, "_tokens_cache", None)
-    monkeypatch.setattr(binance_alpha, "_ticker_cache", {})
-    monkeypatch.setattr(binance_alpha, "_candles_cache", {})
+    binance_alpha.clear_alpha_cache()
 
     def fake_request_json(url, params=None):
         if "token/list" in url:

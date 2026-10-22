@@ -1,0 +1,176 @@
+Crypto AI Assistant V5.3 — Lot 3C : revue des anomalies Alpha
+Date de travail : 22 octobre 2026, Europe/Paris
+Branche : feature/v5.3-hardening ; HEAD conservé : 379c4f6.
+Aucun commit, push, migration, changement de .env, accès à la SQLite personnelle,
+appel privé ou ordre. Les 21 fichiers initialement en attente sont préservés.
+
+1. Causes exactes
+Le transport exigeait code="000000" et success=true. Une réponse HTTP 200
+code="-1121" était classée INVALID_RESPONSE, puis suspend_alpha() bloquait tous
+les appels Alpha. La construction systématique alphaId+USDT ignorait les marchés
+USDC. Les booléens offline/fullyDelisted n'étaient pas exploités. La rétention
+fondée sur l'horodatage de cotation supprimait aussi certains derniers prix anciens
+alors que leur réponse venait d'être reçue. La détection d'ambiguïté ne comparait
+initialement que la paire, pas la chaîne et le contrat.
+
+2. Corrections réalisées
+Normalisation du code JSON chaîne/nombre ; -1121 devient INVALID_PAIR, avec
+refroidissement par paire de 600 secondes, sans suspension globale. Cette règle
+couvre HTTP 200 et HTTP 400. Les quotas 429/418 restent traités avant le parsing,
+et les 5xx, erreurs réseau et enveloppes de service invalides gardent leur
+protection commune. Une invalidation de paire efface son ancien prix du cache.
+Les erreurs temporaires, NO_MARKET, OFFLINE et DELISTED ne signifient jamais
+NOT_FOUND et ne provoquent aucune suppression de position/surveillance.
+
+3. Fichiers modifiés pour cette correction
+services/binance_alpha.py ; services/binance_api_budget.py ;
+services/alpha_cache.py ; services/market_data_errors.py ;
+tests/test_binance_alpha.py ; tests/test_alpha_hardening.py ;
+tests/test_alpha_real_regressions.py ; tools/measure_alpha.py ;
+tools/measure_alpha_pairs.py ; tools/verify_alpha_mutations.py.
+Ajouts : tests/fixtures/alpha/{exchange,tokens,invalid_pair,dna,xdp}.json ;
+reports/lot3c-alpha-{review.txt,measures.json,mutations.json,ambiguities.json}.
+Les autres différences du dépôt précédaient cette intervention.
+
+4. Résolution USDT/USDC
+Le catalogue officiel get-exchange-info est partagé via AlphaCache : TTL de
+600 secondes, chargement unique par clé, taille bornée, renouvellement à la
+prochaine lecture. Le rapprochement utilise baseAsset=alphaId, quoteAsset et
+symbol, avec contrôle de cohérence. Seuls les marchés TRADING et les devises
+USDT/USDC sont retenus ; USDT est préféré lorsqu'il existe, sinon USDC.
+Un catalogue frais sans marché exploitable produit NO_MARKET sans ticker.
+Si les métadonnées sont absentes/malformées ou périmées, le repli est borné à
+USDT, puis USDC uniquement après INVALID_PAIR. Les pannes réseau et quotas ne
+sont pas contournés. Les résultats ticker validés et les invalidités sont
+mémorisés par paire ; aucun nouvel HTTP sur une paire invalide avant expiration.
+Les bougies suivent la paire effectivement validée. quote_asset et
+price_quote_asset conservent la devise native. Le chemin existant de valorisation
+manuelle utilise un taux réel et marque les conversions ESTIMATED ; aucune
+parité USDT/USDC n'est ajoutée et le moteur comptable n'est pas modifié.
+Source officielle :
+https://developers.binance.com/en/docs/catalog/advanced-trading-alpha-trading/api/rest-api/market-data
+
+5. Tokens hors ligne et retirés
+Seuls les booléens JSON true d'un catalogue frais déclenchent ces statuts.
+fullyDelisted=true prend priorité sur offline=true. Aucun ticker ni bougie n'est
+alors demandé. Les valeurs inconnues/manquantes ne deviennent pas un retrait.
+Les flags sont relus au renouvellement ; les transitions actif → hors ligne →
+actif sont testées. Aucun retrait n'est stocké définitivement dans les positions.
+La documentation décrit offline comme booléen sans préciser tout son cycle de
+vie ; fullyDelisted était absent de la documentation consultée, mais présent
+dans le catalogue réel. Leur interprétation est donc conservatrice et réversible.
+Observation publique : 685 tokens, dont 387 (false,false), 182 (true,false),
+116 (true,true) pour (offline,fullyDelisted). Ces chiffres sont un instantané.
+
+6. Données périmées
+La fraîcheur exploitable reste limitée à dix minutes. Une réponse récemment
+reçue peut contenir une cotation ancienne : elle conserve uniquement un dernier
+prix daté dans market_data, current_price=None, analysis_available=false.
+La rétention locale sur échec reste TTL+1800 secondes, soit 40 minutes depuis
+la réception ; le timestamp de source peut remonter à environ 24 heures pour
+un affichage historique explicite. Il ne rend jamais le prix courant utilisable.
+Les délais de réessai des réponses déjà périmées sont conservés.
+Les métadonnées séparent response_age_seconds, cache_age_seconds et
+quote_age_seconds. Les deux premiers évoluent ensemble puisque ce cache stocke
+la réponse validée lors de sa réception. last_trade_age_seconds=None exprime
+l'absence d'un horodatage de transaction certain.
+Point de précision : la documentation nomme closeTime « fin de fenêtre du
+ticker », et non date garantie du dernier trade. exchange_time_semantics indique
+TICKER_WINDOW_END. La politique conserve ce timestamp comme borne conservative
+pour les protections existantes, sans inventer un âge exact de transaction.
+Le cas synthétique de 82 minutes vérifie l'affichage daté et l'interdiction des
+entrées financières courantes ; il ne prétend pas vérifier QUQ en direct.
+
+7. Tests Python et JavaScript
+Suite complète finale : 888/888 tests Python passent en 50,77 secondes.
+La référence de 860 tests est conservée, avec 28 régressions supplémentaires.
+Les 86 tests JavaScript passent via :
+node -e 'require("./tests/test_cockpit.js")'
+Les références comptables indépendantes restent conformes (19 scénarios
+paramétrés, et les autres tests financiers de la suite).
+Les tests Python sont exécutés avec tools/verify_offline.py : audit bloquant
+réseau, .env, SQLite personnelle et accès SQLite hors /tmp. Aucun de ces accès
+n'a été observé. Les tests ASGI locaux nécessitaient une exécution autorisée
+hors du bac à sable ; leurs gardes hors réseau restaient actives.
+
+8. Validation réelle publique
+Cinq GET publics réussis, sans authentification, redirection, ordre ou boucle :
+- get-exchange-info : HTTP 200, 1464 marchés, dont 563 USDT, 585 USDC et 316 U ;
+  683 TRADING et 781 DELISTED, toutes devises confondues.
+- token/list : HTTP 200, 685 tokens.
+- ticker ALPHA_276USDT (PUMP) : HTTP 200, code="-1121", success=false, data=null.
+- ticker ALPHA_1247USDT (DNA), après PUMP : HTTP 200, enveloppe réussie.
+- ticker ALPHA_1214USDC (XDP) : HTTP 200, enveloppe réussie.
+PUMP est offline=true et fullyDelisted=true dans le catalogue : le code corrigé
+l'évite avant tout ticker. Le premier accès dans le bac à sable avait échoué au
+DNS ; l'accès autorisé a permis ces cinq requêtes. Les fixtures contiennent des
+données publiques réduites aux champs utiles, sans donnée de compte ni secret.
+Le catalogue confirme des marchés uniquement USDC pour XDP, AXIS et VVV dans
+les deux devises gérées. Aucun ticker supplémentaire AXIS/VVV n'a été appelé.
+La succession HTTP réelle prouve les réponses publiques ; l'absence de suspension
+dans notre adaptateur est prouvée par le rejeu HTTP isolé de ces mêmes enveloppes.
+Aucune panne ni saturation réelle n'a été provoquée. Aucun dernier trade QUQ
+n'a été recherché. Aucun test réel de réactivation n'a été effectué.
+
+9. Mesures avant/après — simulation uniquement
+Source avant : copie de l'adaptateur 3C non commité prise avant correction,
+SHA256 bf8e3aa62da01a5489a017219f79eac8dab15671e5f09136479c918336abc651.
+Scénario identique : PUMP, DNA, XDP, JCT, BAD, CNPY, QUQ ; deux paires invalides,
+un marché USDC uniquement et une cotation ancienne. Les noms servent ici à
+identifier des fixtures synthétiques ; ils ne décrivent pas tous leur état réel.
+                               Avant      Après
+Analyses disponibles              0          4
+Prix courants disponibles         0          4
+Prix courants indisponibles       7          3
+Derniers prix périmés affichables 0          1
+Suspensions globales              1          0
+Requêtes HTTP                     2         13
+Moyenne HTTP/token              0,286      1,857
+Unités locales de quota           2         13
+Paires découvertes                0          7
+Après correction : deux lectures de catalogue mutualisées, sept tickers (un par
+token), quatre lectures de bougies. Un essai USDT absent est évité pour XDP.
+Ce dernier compteur mesure l'évitement structurel ; avant correction la boucle
+n'atteignait même pas XDP, à cause de la suspension. La hausse des appels reflète
+la reprise des analyses et n'est pas présentée comme une économie de quota.
+Les unités locales ne sont pas des poids Binance officiellement publiés.
+Résultats détaillés : lot3c-alpha-measures.json. Reproduction :
+venv/bin/python -B tools/measure_alpha_pairs.py --before /tmp/alpha-3c-before/binance_alpha.py --output /tmp/alpha-pairs.json
+La copie avant est un artefact temporaire de cette session. L'outil de mesures
+3C existant a également été adapté au nouvel endpoint de catalogue.
+
+10. Tests de mutation
+24/24 mutations détectées dans des copies temporaires, avec audit d'isolation
+conforme et sources initiales inchangées. Cela inclut la réintroduction explicite
+de suspend_alpha() sur INVALID_PAIR : les tests invalide → valide échouent.
+Les autres mutations couvrent les quotas, staleness, analyse, cache externe,
+ambiguïtés, concurrence et navigateur. Résultats : lot3c-alpha-mutations.json.
+Commande : venv/bin/python -B tools/verify_alpha_mutations.py --node /home/glaronche/.nvm/versions/node/v24.16.0/bin/node --output /tmp/alpha-mutations.json
+
+11. Limites et risques résiduels
+Le catalogue réel contient 21 symboles ambigus ; leurs alphaId/chaînes/contrats
+figurent dans lot3c-alpha-ambiguities.json. Aucun contrat n'est choisi silencieusement
+par le résolveur Alpha. Une interface de sélection par identité stable relève
+d'un lot séparé. La priorité existante Binance Spot est préservée.
+La détection de changements de statut/paires peut attendre le TTL de dix minutes.
+Le cache mémoire est partagé entre lecteurs d'un processus ; chaque worker a son
+propre catalogue, tandis que le budget de service reste durable et commun.
+Les marchés en devise U restent hors périmètre. Le temps exact du dernier trade
+nécessiterait une source de transactions dédiée et un budget supplémentaire.
+Sans closeTime, le traitement existant signale explicitement RECEIVED_AT ; ce
+n'est pas une preuve de l'heure du dernier trade. Aucun changement du moteur de
+décision ou de comptabilité n'est introduit pour combler ces limites.
+Les observations publiques sont ponctuelles et ne garantissent pas l'état futur
+d'un token. La signification exhaustive de fullyDelisted reste non documentée.
+
+12. Contre-vérifications demandées à Claude Code
+Rejouer PUMP → DNA et XDP → JCT, y compris les réponses HTTP 200/-1121 chaîne et
+nombre et HTTP 400/-1121. Vérifier que 429/418/5xx gardent leur priorité et leur
+Retry-After. Contrôler le repli borné sans catalogue, l'expiration des invalidités,
+l'invalidation d'un prix précédemment validé, les deux devises et les bougies.
+Revoir offline/fullyDelisted et la réactivation, les 21 ambiguïtés et la priorité
+Spot. Examiner particulièrement la distinction closeTime/dernier trade, les
+métadonnées d'âge et l'absence de fuite des prix périmés dans les valorisations.
+Confirmer les mesures et la mutation de suspension ; inspecter le diff complet
+du lot 3C, y compris ses changements préexistants. Aucun commit avant cette
+nouvelle contre-expertise.

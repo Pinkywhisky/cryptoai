@@ -1,0 +1,60 @@
+{
+  "type": "SIMULATED_HTTP",
+  "baseline": "uncommitted 3C snapshot before corrections",
+  "before": {
+    "scenario": [
+      "PUMP",
+      "DNA",
+      "XDP",
+      "JCT",
+      "BAD",
+      "CNPY",
+      "QUQ"
+    ],
+    "tokens": 7,
+    "analyses_available": 0,
+    "calls_per_token_average": 0.286,
+    "prices_available": 0,
+    "prices_unavailable": 7,
+    "dated_stale_prices": 0,
+    "global_suspensions": 1,
+    "http_calls": 2,
+    "ticker_calls_by_pair": {
+      "ALPHA_0USDT": 1
+    },
+    "local_quota_consumption": 2,
+    "market_pairs_discovered": 0,
+    "absent_usdt_requests_avoided": 0
+  },
+  "after": {
+    "scenario": [
+      "PUMP",
+      "DNA",
+      "XDP",
+      "JCT",
+      "BAD",
+      "CNPY",
+      "QUQ"
+    ],
+    "tokens": 7,
+    "analyses_available": 4,
+    "calls_per_token_average": 1.857,
+    "prices_available": 4,
+    "prices_unavailable": 3,
+    "dated_stale_prices": 1,
+    "global_suspensions": 0,
+    "http_calls": 13,
+    "ticker_calls_by_pair": {
+      "ALPHA_0USDT": 1,
+      "ALPHA_1USDT": 1,
+      "ALPHA_2USDC": 1,
+      "ALPHA_3USDT": 1,
+      "ALPHA_4USDT": 1,
+      "ALPHA_5USDT": 1,
+      "ALPHA_6USDT": 1
+    },
+    "local_quota_consumption": 13,
+    "market_pairs_discovered": 7,
+    "absent_usdt_requests_avoided": 1
+  }
+}

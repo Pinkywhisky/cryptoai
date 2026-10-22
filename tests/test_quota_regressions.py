@@ -215,7 +215,7 @@ def test_missing_or_invalid_metadata_cannot_destroy_official_limits(tmp_path, pa
 def test_default_and_configured_fallbacks_are_network_specific(tmp_path, monkeypatch):
     budget = quotas.ApiBudget(tmp_path/"db.sqlite", clock=Clock())
     assert budget.metrics()["limits"][0]["limit"] == 6000
-    assert budget.metrics("ALPHA")["limits"][0]["limit"] == 600
+    assert budget.metrics("ALPHA")["limits"][0]["limit"] == 60
     assert budget.metrics("SPOT_TESTNET")["limits"][0]["limit"] == 600
     monkeypatch.setenv("CRYPTOAI_API_SPOT_WEIGHT_PER_MINUTE", "1000")
     monkeypatch.setenv("CRYPTOAI_API_SPOT_RAW_REQUESTS", "5000")
@@ -547,7 +547,8 @@ def test_spot_metadata_and_headers_cannot_initialize_alpha_or_testnet(tmp_path):
     assert not budget.publish_limits("ALPHA", limits())
     net, token = budget.reserve("https://www.binance.com/bapi/alpha")
     budget.observe(net, Response(headers={"X-MBX-USED-WEIGHT-1M": "6000"}), token)
-    assert budget.metrics("ALPHA")["windows"]["REQUEST_WEIGHT:60"]["used"] == 80
+    assert budget.metrics("ALPHA")["windows"]["RAW_REQUESTS:60"]["used"] == 1
+    assert "REQUEST_WEIGHT:60" not in budget.metrics("ALPHA")["windows"]
     budget.publish_limits("SPOT", limits(1000))
     assert budget.metrics("SPOT_TESTNET")["limits"][0]["limit"] == 600
 

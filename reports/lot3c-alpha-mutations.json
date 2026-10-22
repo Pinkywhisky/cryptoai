@@ -1,0 +1,128 @@
+{
+  "baseline_passed": true,
+  "total": 24,
+  "detected": 24,
+  "source_unchanged": true,
+  "results": [
+    {
+      "mutation": "invalid_pair_suspends_every_token",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "artificial_six_call_ceiling",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "old_eighty_unit_cost",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "transient_classified_invalid",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "identification_downloads_analysis",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "expired_price_financial_leak",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "timestamp_refreshed_on_failure",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "ten_minute_expiry_ignored",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "undated_token_price_fallback",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "http_bans_ignored",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "spot_headers_poison_alpha",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "malformed_catalog_confirms_absence",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "cleanup_deletes_unconfirmed_symbol",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "repair_reclassifies_on_outage",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "outer_cache_extends_quote_lifetime",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "receipt_hides_old_exchange_time",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "duplicate_symbol_last_wins",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "transport_concurrency_unbounded",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "stale_analysis_is_current",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "server_time_does_not_expire_cache",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "alpha_retry_rescans_spot",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "alpha_refresh_resurrects_invalidated_cache",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "browser_price_expiry_ignored",
+      "detected": true,
+      "isolation_ok": true
+    },
+    {
+      "mutation": "browser_stale_price_leak",
+      "detected": true,
+      "isolation_ok": true
+    }
+  ]
+}

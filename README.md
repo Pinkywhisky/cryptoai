@@ -744,13 +744,13 @@ CRYPTOAI_API_SAFETY configure la fraction maximale utilisable, 0.8 par défaut, 
 | --- | ---: | ---: | --- |
 | Spot réel | 6000 | 61000 / 5 minutes | CRYPTOAI_API_SPOT |
 | Spot testnet | 600 | 600 / minute | CRYPTOAI_API_TESTNET |
-| Alpha | 600 | 600 / minute | CRYPTOAI_API_ALPHA |
+| Alpha (politique locale) | sans poids publié | 60 / minute et 10 / seconde | CRYPTOAI_API_ALPHA |
 | Wallet accountSnapshot réel | 12000 | 600 / minute | CRYPTOAI_API_SNAPSHOT |
 | Wallet accountSnapshot testnet, non utilisé | 600 | 600 / minute | CRYPTOAI_API_TESTNET_SNAPSHOT |
 
-Pour chaque préfixe : suffixe _WEIGHT_PER_MINUTE ou _RAW_REQUESTS, entier de 1 à 1000000000. Exemple de configuration du processus : CRYPTOAI_API_SPOT_WEIGHT_PER_MINUTE=3000 ; cela fixe le repli, pas un remplacement des limites officielles. Aucune modification du .env n'est nécessaire aux tests. La configuration invalide refuse les nouveaux appels ; les changements de repli conservent la consommation et les suspensions persistées.
+Pour chaque préfixe hors Alpha : suffixe _WEIGHT_PER_MINUTE ou _RAW_REQUESTS, entier de 1 à 1000000000. Exemple de configuration du processus : CRYPTOAI_API_SPOT_WEIGHT_PER_MINUTE=3000 ; cela fixe le repli, pas un remplacement des limites officielles. Aucune modification du .env n'est nécessaire aux tests. La configuration invalide refuse les nouveaux appels ; les changements de repli conservent la consommation et les suspensions persistées.
 
-Les valeurs Spot 6000 et RAW_REQUESTS 61000/5 minutes correspondent aux exemples publiés par Binance ; la réponse API réelle reste prioritaire. Les replis testnet/Alpha et les plafonds RAW hors Spot sont des politiques locales prudentes. Wallet /sapi/v1/accountSnapshot (poids IP 2400) a son propre budget par endpoint et ses en-têtes X-SAPI-USED-IP-WEIGHT-* ; il ne consomme pas le plafond /api/v3. Aucun autre endpoint Wallet n'est pris en charge par le gestionnaire. Les poids Alpha non documentés restent estimés à 80, sans assimiler leurs éventuels en-têtes Spot aux quotas Alpha.
+Les valeurs Spot 6000 et RAW_REQUESTS 61000/5 minutes correspondent aux exemples publiés par Binance ; la réponse API réelle reste prioritaire. Les replis testnet/Alpha et les plafonds RAW hors Spot sont des politiques locales prudentes. Wallet /sapi/v1/accountSnapshot (poids IP 2400) a son propre budget par endpoint et ses en-têtes X-SAPI-USED-IP-WEIGHT-* ; il ne consomme pas le plafond /api/v3. Aucun autre endpoint Wallet n'est pris en charge par le gestionnaire. Alpha compte désormais les requêtes locales, sans poids inventé ni import des limites Spot ; sa politique indépendante est détaillée ci-dessous.
 
 Les en-têtes X-MBX-USED-WEIGHT-* renseignent la consommation absolue du quota IP, y compris celle d'autres logiciels. Le maximum distant observé et les coûts locaux ne diminuent jamais dans une même fenêtre. Les réservations encore incertaines s'ajoutent à ce maximum, puis sont confirmées par leur propre réponse ; cela évite de conserver un surcomptage une fois les requêtes parallèles terminées. L'absence d'en-tête ou un timeout ne rembourse pas la requête. Des doublons contradictoires utilisent la plus grande valeur valide. Un en-tête d'intervalle inconnu est mesuré sans inventer une limite numérique de 600. Les fenêtres UTC sont renouvelées à leurs bornes, les requêtes en vol sont conservées ; une réponse datée de la fenêtre précédente ne pollue pas la nouvelle. Sans date fiable, l'observation reste prudente dans la fenêtre de réception.
 
@@ -801,3 +801,60 @@ venv/bin/python -B tools/simulate_sync_cost.py --markets 1666 --known 3
 ```
 
 Le simulateur n'utilise aucun secret ni HTTP. Il compare l'orchestrateur et init_db du commit financier 78b2358 au nouveau comportement sur des copies synthétiques ; l'outillage financier partagé courant est identique entre les deux variantes. Il distingue requêtes observées, poids documentés estimés, durée réseau simulée et temps machine mesuré. La comparaison nécessite cet objet Git local ; elle ne fait aucun fetch. Les rapports et sauvegardes de revue restent hors du dépôt.
+
+
+### Binance Alpha : politique locale et fraîcheur (lot 3C)
+
+La [documentation officielle Alpha Market Data](https://developers.binance.com/en/docs/catalog/advanced-trading-alpha-trading/api/rest-api/market-data), consultée le 22 octobre 2026, décrit les endpoints et leurs formats, mais ne fournit pas de plafond chiffré ni de poids de requête exploitable pour les trois appels utilisés ici. La description de get-exchange-info évoque les limites, sans table rateLimits dans son schéma/exemple. Le plafond Spot de 6000 ne s'applique donc pas par hypothèse à Alpha.
+
+Endpoints publics utilisés :
+
+| Usage | Chemin sous https://www.binance.com |
+| --- | --- |
+| Catalogue partagé | /bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list |
+| Cotation | /bapi/defi/v1/public/alpha-trade/ticker |
+| Bougies | /bapi/defi/v1/public/alpha-trade/klines |
+
+Politique locale, indépendante de Spot :
+
+| Paramètre du processus | Défaut avant marge | Avec la marge 0,8 |
+| --- | ---: | ---: |
+| CRYPTOAI_API_ALPHA_RAW_REQUESTS | 60 requêtes/minute | 48 |
+| CRYPTOAI_API_ALPHA_BURST_PER_SECOND | 10 requêtes/seconde | 8 |
+
+Ce sont des limites locales ajustables, pas des quotas annoncés par Binance. Une unité représente un appel HTTP réservé, quelle que soit la route Alpha. Les métriques conservent le champ historique weight pour compatibilité, avec accounting_unit=LOCAL_REQUESTS ; il ne désigne aucun poids officiel. Le paramètre CRYPTOAI_API_ALPHA_WEIGHT_PER_MINUTE de l'ancienne estimation est retiré et ignoré ; utiliser les deux paramètres de requêtes ci-dessus. Ils acceptent les mêmes entiers que les replis communs ; une configuration dont la marge ne permet aucun appel échoue fermée.
+
+Le défaut permet 21 appels à froid pour dix tokens : un catalogue, dix cotations, dix séries de bougies. Les protections de rafale imposent jusqu'à deux pauses locales d'une seconde dans ce scénario instantané. Les fenêtres sont alignées UTC, avec les réservations atomiques partagées entre processus. Deux transports Alpha au maximum s'exécutent simultanément par processus. Des appels à des clés différentes ne sont pas fusionnés ; plusieurs processus gardent leurs propres caches et leur propre sémaphore, tout en partageant le budget SQLite. La politique n'augmente pas automatiquement en cas de refus et ne coordonne pas les autres applications de la même IP.
+
+429 et 418, ainsi que Retry-After numérique ou date HTTP, conservent les suspensions persistantes communes, sans retry immédiat. En leur absence : replis communs de 60 secondes / trois jours. Un éventuel couple simple RateLimit-Remaining=0 et RateLimit-Reset en secondes suspend les futurs appels ; les formes absentes, complexes ou invalides n'inventent aucun plafond. Ce support est défensif et ne prétend pas que Binance publie ces en-têtes sur Alpha. X-MBX-USED-WEIGHT-* n'est jamais interprété comme un quota Alpha.
+
+Un timeout, une connexion interrompue ou un HTTP 5xx autorise au plus une nouvelle tentative après 250 ms, chaque tentative étant réservée. L'épuisement d'une fenêtre locale d'une seconde autorise au plus une attente d'une seconde et une nouvelle tentative ; les refus plus longs retournent immédiatement un délai. Après un échec de transport, un circuit Alpha partagé suspend brièvement les autres appels. Les échecs de chaque clé reçoivent également un délai exponentiel plafonné à 60 secondes, sans raccourcir un Retry-After serveur. Aucun ordre ni appel privé n'est nécessaire au fonctionnement d'Alpha.
+
+Le catalogue, les cotations et les bougies sont chargés à la demande, mutualisés entre threads pour une même clé et conservés 600 secondes. Les paramètres des bougies et l'identifiant réel de la paire appartiennent à la clé de cache. Le cache est borné à 512 entrées, copie les valeurs et ne lance aucun travail réseau en arrière-plan. Les renouvellements se répartissent selon l'âge de chaque entrée et la capacité disponible. Une panne ne prolonge jamais leur horodatage.
+
+États renvoyés dans market_data :
+
+- FRESH : cotation courante et bougies exploitables.
+- PARTIAL : cotation courante, analyse/bougies indisponibles ; aucune analyse technique n'est inventée.
+- STALE : dernière cotation connue conservée uniquement pour information.
+- UNAVAILABLE : aucune cotation exploitable.
+- INVALID : absence confirmée dans un catalogue valide et courant.
+
+Les causes distinctes comprennent QUOTA, NETWORK_ERROR, SERVICE_UNAVAILABLE, INVALID_RESPONSE, STALE_DATA et AMBIGUOUS_SYMBOL. Le résolveur retourne valid=null lorsqu'il ne peut pas conclure ; seuls un format invalide ou une absence confirmée donnent valid=false. Les créations/mises à jour retournent alors une erreur structurée 429/503, ou 400 pour un symbole ambigu. Les nettoyages et réparations reportent les symboles incertains au lieu de supprimer ou reclasser leurs données.
+
+La fin du ticker (closeTime) sert d'horodatage lorsqu'elle est fournie. Sinon la date de réception est explicitement identifiée par RECEIVED_AT ; ce n'est pas l'heure d'une dernière transaction. Une cotation de 600 secondes ou plus n'est plus actuelle. Des bougies trop anciennes, incohérentes ou impossibles à exploiter numériquement n'alimentent pas l'analyse. Le prix non daté du catalogue n'est jamais un secours de cotation.
+
+Pendant 1800 secondes supplémentaires au maximum, le cache peut exposer une dernière valeur connue avec sa devise native et sa date. current_price devient null et ticker est vide ; ce prix n'entre donc pas dans les valorisations ni les décisions. Une photographie comptable synchronisée conserve ses montants et sa date historique ; elle n'est pas présentée comme une nouvelle cotation Alpha. Les formules de PnL, conversion, scoring et le choix WAIT du cockpit Alpha restent inchangés.
+
+Le tableau, les cartes mobiles, les détails et les listes personnelles affichent cet état avec échappement HTML. Le navigateur refuse aussi d'afficher comme actuel un payload reçu depuis plus de dix minutes. Le cache global ne prolonge pas la fraîcheur d'Alpha : une expiration ou une reprise renouvelle uniquement ses lignes, en préservant les lignes Spot et leur date de scan. Une invalidation concurrente empêche la résurrection du cache.
+
+Vérifications reproductibles, exclusivement HTTP factice et SQLite temporaire :
+
+```bash
+venv/bin/python -B tools/verify_offline.py
+node tests/test_cockpit.js
+venv/bin/python -B tools/measure_alpha.py --output /tmp/alpha-measures.json
+venv/bin/python -B tools/verify_alpha_mutations.py --node /chemin/vers/node --output /tmp/alpha-mutations.json
+```
+
+Le banc de mesure compare le commit 3B 379c4f6 et les sources locales sur des copies jetables. Les temps muraux sont ceux du banc local avec latence HTTP simulée de 1 ms ; les attentes de quota sont simulées séparément, pas des performances Binance mesurées. Il inclut dix tokens avec vingt appels Spot factices concurrents et une indisponibilité. Les mutations ne modifient jamais les sources de travail.

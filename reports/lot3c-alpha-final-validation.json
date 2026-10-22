@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-22",
+  "branch": "feature/v5.3-hardening",
+  "head": "379c4f6",
+  "python": {
+    "passed": 926,
+    "seconds": 55.56,
+    "audit": {
+      "network_attempts": 0,
+      "personal_accesses": 0,
+      "sqlite_outside_tmp": 0
+    }
+  },
+  "javascript": {
+    "passed": 93,
+    "failed": 0,
+    "network_attempts": 0
+  },
+  "mutations": {
+    "detected": 34,
+    "total": 34,
+    "source_unchanged": true,
+    "all_isolated": true
+  },
+  "public_requests_this_intervention": 0,
+  "public_fixtures_replayed": true,
+  "commit_created": false,
+  "push_performed": false
+}

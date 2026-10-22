@@ -1,5 +1,7 @@
 import json
 import sqlite3
+
+from services.market_data_errors import MarketDataError, market_state
 from decimal import Decimal, localcontext
 from datetime import UTC, datetime
 from pathlib import Path
@@ -120,6 +122,9 @@ def resolve_user_market_symbol(payload: dict[str, Any]) -> dict[str, Any]:
     if not raw_symbol:
         raise ValueError("Symbole invalide. Exemple attendu : BTCUSDC ou BTC.")
     result = resolve_market_symbol(raw_symbol)
+    if result.get("valid") is None:
+        raise MarketDataError(result.get("error_code"), service=result.get("service", "MARKET"),
+                              retry_after=result.get("retry_after"))
     if not result.get("valid"):
         raise ValueError("Symbole introuvable sur Binance Spot et Binance Alpha.")
     return result
@@ -137,6 +142,9 @@ def resolve_position_market_symbol(payload: dict[str, Any], existing_source: str
     result = resolve_market_symbol(raw_symbol)
     if result.get("valid"):
         return result
+    if result.get("valid") is None:
+        raise MarketDataError(result.get("error_code"), service=result.get("service", "MARKET"),
+                              retry_after=result.get("retry_after"))
     if source == "MANUAL":
         return {
             "valid": True,
@@ -177,39 +185,29 @@ def _pct(numerator: float | None, denominator: float | None) -> float | None:
     return round(numerator / denominator * 100, 4)
 
 
-def get_market_snapshot(symbol: str) -> dict[str, Any]:
+def get_market_snapshot(symbol: str, market_source: str | None = None) -> dict[str, Any]:
     from services.scanner import analyze_symbol_multi
 
     raw_symbol = str(symbol or "").strip().upper()
-    resolution = resolve_market_symbol(raw_symbol)
-    if not resolution.get("valid"):
-        return {
-            "symbol": raw_symbol,
-            "is_valid_symbol": False,
-            "analysis_available": False,
-            "market_source": MARKET_SOURCE_UNKNOWN,
-            "market_error": "Symbole Binance invalide",
-        }
+    # Existing Alpha records do not depend on a fresh Spot catalog at every read.
+    resolution = ({"valid": True, "symbol": raw_symbol, "market_source": MARKET_SOURCE_ALPHA}
+                  if market_source == MARKET_SOURCE_ALPHA else resolve_market_symbol(raw_symbol))
+    if resolution.get("valid") is not True:
+        error = MarketDataError(resolution.get("error_code") or "NOT_FOUND",
+                                service=resolution.get("service", "MARKET"),
+                                retry_after=resolution.get("retry_after"))
+        return {"symbol": raw_symbol, "is_valid_symbol": resolution.get("valid"),
+                "analysis_available": False, "market_source": MARKET_SOURCE_UNKNOWN,
+                "market_error": str(error), "current_price": None,
+                "market_data": market_state("INVALID" if resolution.get("valid") is False
+                                           else "UNAVAILABLE", error=error, service=error.service)}
 
     if resolution.get("market_source") == MARKET_SOURCE_ALPHA:
-        try:
-            alpha_data = get_alpha_market_data(resolution["symbol"])
-        except Exception:
-            alpha_data = {"valid": False}
-        if alpha_data.get("valid"):
-            return {
-                **alpha_data,
-                "is_valid_symbol": True,
+        alpha_data = get_alpha_market_data(resolution["symbol"])
+        return {**alpha_data, "market_source": MARKET_SOURCE_ALPHA,
+                "is_valid_symbol": alpha_data.get("valid"),
                 "analysis_available": False,
-                "price_available": alpha_data.get("current_price") is not None,
-            }
-        return {
-            "symbol": resolution["symbol"],
-            "is_valid_symbol": True,
-            "analysis_available": False,
-            "market_source": MARKET_SOURCE_ALPHA,
-            "market_error": "Prix Alpha indisponible",
-        }
+                "price_available": alpha_data.get("current_price") is not None}
 
     normalized = resolution["symbol"]
     try:
@@ -307,7 +305,10 @@ def _manual_financial_values(position, snapshot, fx_rates=None):
 
 def enrich_position(position: dict[str, Any], *, fx_rates=None) -> dict[str, Any]:
     enriched = dict(position)
-    snapshot = get_market_snapshot(position["symbol"])
+    snapshot = (get_market_snapshot(position["symbol"], market_source=MARKET_SOURCE_ALPHA)
+                if position.get("market_source") == MARKET_SOURCE_ALPHA
+                else get_market_snapshot(position["symbol"]))
+    enriched["market_data"] = snapshot.get("market_data")
     if position.get("synced_from_binance"):
         # Financial facts are the dated accounting snapshot; analysis never
         # reconstructs a cost from zero/None or overwrites a converted USDC price.
@@ -499,7 +500,10 @@ def delete_position(position_id: int, db_path: Path | str = DB_PATH) -> bool:
 
 def enrich_watch_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(candidate)
-    snapshot = get_market_snapshot(candidate["symbol"])
+    snapshot = (get_market_snapshot(candidate["symbol"], market_source=MARKET_SOURCE_ALPHA)
+                if candidate.get("market_source") == MARKET_SOURCE_ALPHA
+                else get_market_snapshot(candidate["symbol"]))
+    enriched["market_data"] = snapshot.get("market_data")
     if not snapshot.get("analysis_available", True):
         enriched.update(
             {
@@ -655,20 +659,23 @@ def cleanup_invalid_symbols(db_path: Path | str = DB_PATH) -> dict[str, Any]:
     invalid_symbols: list[str] = []
     removed_watch = 0
     marked_positions = 0
-
     with _connect(db_path) as connection:
         watch_rows = connection.execute("SELECT id, symbol FROM watch_candidates").fetchall()
+        position_rows = connection.execute("SELECT id, symbol, source FROM positions").fetchall()
+    resolutions = {row["symbol"]: resolve_market_symbol(row["symbol"])
+                   for row in [*watch_rows, *position_rows]}
+    deferred = sum(result.get("valid") is None for result in resolutions.values())
+    with _connect(db_path) as connection:
         for row in watch_rows:
             symbol = str(row["symbol"]).upper()
-            if not resolve_market_symbol(symbol).get("valid"):
+            if resolutions[row["symbol"]].get("valid") is False:
                 invalid_symbols.append(symbol)
                 cursor = connection.execute("DELETE FROM watch_candidates WHERE id = ?", (row["id"],))
                 removed_watch += cursor.rowcount
 
-        position_rows = connection.execute("SELECT id, symbol, source FROM positions").fetchall()
         for row in position_rows:
             symbol = str(row["symbol"]).upper()
-            if not resolve_market_symbol(symbol).get("valid"):
+            if resolutions[row["symbol"]].get("valid") is False:
                 invalid_symbols.append(symbol)
                 if str(row["source"] or "MANUAL").upper() == "MANUAL":
                     continue
@@ -688,6 +695,7 @@ def cleanup_invalid_symbols(db_path: Path | str = DB_PATH) -> dict[str, Any]:
         "removed": removed_watch + marked_positions,
         "watch_removed": removed_watch,
         "positions_marked_invalid": marked_positions,
+        "deferred": deferred,
         "invalid_symbols": sorted(set(invalid_symbols)),
     }
 
@@ -698,8 +706,15 @@ def repair_market_sources(db_path: Path | str = DB_PATH) -> dict[str, Any]:
 
     with _connect(db_path) as connection:
         watch_rows = connection.execute("SELECT id, symbol, market_source FROM watch_candidates").fetchall()
+        position_rows = connection.execute("SELECT id, symbol, source, market_source FROM positions").fetchall()
+    resolutions = {row["symbol"]: resolve_market_symbol(row["symbol"])
+                   for row in [*watch_rows, *position_rows]}
+    deferred = sum(result.get("valid") is None for result in resolutions.values())
+    with _connect(db_path) as connection:
         for row in watch_rows:
-            resolution = resolve_market_symbol(row["symbol"])
+            resolution = resolutions[row["symbol"]]
+            if resolution.get("valid") is None:
+                continue
             new_source = resolution.get("market_source", MARKET_SOURCE_UNKNOWN)
             if row["market_source"] != new_source:
                 connection.execute(
@@ -720,10 +735,11 @@ def repair_market_sources(db_path: Path | str = DB_PATH) -> dict[str, Any]:
                 updated += 1
                 symbols.append(str(row["symbol"]).upper())
 
-        position_rows = connection.execute("SELECT id, symbol, source, market_source FROM positions").fetchall()
         for row in position_rows:
             source = str(row["source"] or "MANUAL").upper()
-            resolution = resolve_market_symbol(row["symbol"])
+            resolution = resolutions[row["symbol"]]
+            if resolution.get("valid") is None:
+                continue
             if not resolution.get("valid") and source == "MANUAL":
                 resolution = {
                     "symbol": str(row["symbol"]).upper(),
@@ -753,7 +769,7 @@ def repair_market_sources(db_path: Path | str = DB_PATH) -> dict[str, Any]:
 
         connection.commit()
 
-    return {"updated": updated, "symbols": sorted(set(symbols))}
+    return {"updated": updated, "symbols": sorted(set(symbols)), "deferred": deferred}
 
 
 def _int_or_none(value: Any) -> int | None:

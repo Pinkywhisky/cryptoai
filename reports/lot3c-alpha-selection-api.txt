@@ -1,0 +1,44 @@
+Contrat minimal Alpha — sélection explicite et prévisualisation
+22 octobre 2026 ; lecture seule ; authentification de session existante requise.
+
+GET /api/alpha/candidates?symbol=BOB
+Réponse JSON : symbol, candidates[], selection_required, persistence_supported=false.
+Chaque candidat expose alphaId, chainId, contractAddress, offline, fullyDelisted,
+requires_explicit_selection. Les identités identiques sont dédupliquées. Cette
+liste ne prétend pas autoriser la négociation : les flags du catalogue de tokens
+restent distincts du statut du marché. Les données périmées ne confirment pas
+une sélection ; les erreurs structurées et leur Retry-After sont conservés.
+
+GET /api/alpha/quote-preview?symbol=BOB&alpha_id=ALPHA_1&chain_id=1&contract_address=new
+Paramètres bornés et validés. Les identifiants supplémentaires sont obligatoires
+quand présents dans la source. Une sélection partielle, inconnue ou ambiguë
+échoue sans prix. L'API renvoie alpha_identity dans la réponse validée.
+Sans identité, un symbole ambigu reste AMBIGUOUS_SYMBOL ; aucun candidat actif
+n'est choisi implicitement, même s'il est le seul candidat encore actif.
+Si tous les candidats sont hors ligne ou retirés, le résultat est NO_MARKET.
+Chaque réponse comporte usage=PREVIEW_ONLY et selection_persisted=false.
+Cette prévisualisation ne crée ni surveillance ni position et ne modifie aucun
+contrat historique. Le POST actuel de surveillance par symbole reste bloqué
+pour les symboles ambigus : la prévisualisation ne vaut pas persistance.
+
+Vérification ponctuelle d'un conflit :
+GET /api/alpha/quote-preview?symbol=CYS&verify_conflict=true
+Si offline=true mais un marché frais est TRADING : OFFLINE_CONFLICT.
+Sans verify_conflict=true : aucun ticker n'est demandé. Avec cette option :
+vérification mutualisée et mise en cache 600 secondes, au plus une tentative
+par paire candidate (USDT/USDC) ; pas de contournement des quotas/suspensions.
+Un résultat positif reste UNAVAILABLE, current_price=null, ticker={},
+price_available=false, analysis_available=false ; last_known_price/last_known_at
+et la devise native sont uniquement dans market_data, avec indicative_only=true
+et trading_authorized=false. La présence du ticker n'est jamais une autorisation
+de négociation. Les calculs financiers ne reçoivent pas ce prix.
+
+Suite proposée pour un lot séparé :
+Le modèle persistant actuel est centré sur le symbole et ne possède pas les
+champs d'identité Alpha nécessaires ; aucune migration n'est autorisée ici.
+Prévoir une identité immutable alphaId + chainId + contractAddress dans les
+surveillances et positions, les validations POST/PATCH correspondantes et un
+sélecteur explicite dans l'interface. La suppression d'une identité du catalogue
+ne doit jamais provoquer sa substitution par un autre contrat de même symbole.
+Une ancienne position sans identité certaine doit conserver cette incertitude,
+sans conversion automatique vers le contrat choisi pour une nouvelle surveillance.

@@ -72,6 +72,9 @@ def pytest_configure(config):
 def empty_default_database():
     # Modules retain this temporary path in their default arguments.
     from services.history import reset_database
+    from services.binance_alpha import clear_alpha_cache
+
+    clear_alpha_cache()
 
     reset_database(db_path=Path(os.environ["CRYPTOAI_DB_PATH"]))
     # Quota bans survive production resets; each isolated test starts fresh.

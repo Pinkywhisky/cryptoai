@@ -41,7 +41,7 @@ function functionSource(name) {
 
 function loadFunctions(names, globals = {}) {
   const context = vm.createContext(globals);
-  vm.runInContext([...new Set(["escapeHtml", "financialNumber", "formatFinancial", "formatFinancialPercent", "financialClass", "financialStatusLabel", ...names])].map(functionSource).join("\n"), context, { filename: "static/app.js" });
+  vm.runInContext([...new Set(["escapeHtml", "financialNumber", "formatFinancial", "formatFinancialPercent", "financialClass", "financialStatusLabel", "alphaMarketState", "marketDataStatusHtml", "marketPriceHtml", ...names])].map(functionSource).join("\n"), context, { filename: "static/app.js" });
   return context;
 }
 
@@ -738,3 +738,126 @@ test("incremental progress exposes historical coverage date and unrefreshed scop
   assert.match(text, /1663 marchés non réactualisés/);
   assert.match(text, /couverture au 2026-01-01/);
 });
+
+
+for (const [state, reason, label] of [
+  ["FRESH", null, "Cours Alpha actuel"],
+  ["PARTIAL", "NO_CANDLES", "Analyse Alpha partielle"],
+  ["STALE", "STALE_DATA", "Dernière cotation trop ancienne"],
+  ["UNAVAILABLE", "QUOTA", "Limite de requêtes temporairement atteinte"],
+  ["UNAVAILABLE", "NETWORK_ERROR", "Erreur réseau"],
+  ["UNAVAILABLE", "SERVICE_UNAVAILABLE", "Service indisponible"],
+  ["UNAVAILABLE", "INVALID_RESPONSE", "Réponse invalide"],
+  ["INVALID", "NOT_FOUND", "catalogue confirmé"],
+]) {
+  test("Alpha status displays " + state + "/" + reason + " safely", () => {
+    const context = loadFunctions([], { formatNumber: (v) => String(v ?? "-") });
+    const item = { current_price: 3, market_data: {
+      state, reason, as_of: Date.now() / 1000 - 1, retry_after: 8,
+    } };
+    const html = context.marketPriceHtml(item);
+    assert.ok(html.includes(label), html);
+    if (["STALE", "UNAVAILABLE", "INVALID"].includes(state)) {
+      assert.match(html, /<strong>-<\/strong>/);
+      assert.doesNotMatch(html, /<strong>3<\/strong>/);
+    } else assert.match(html, /<strong>3<\/strong>/);
+    assert.doesNotMatch(html, /achat|BUY_READY/i);
+  });
+}
+
+test("Alpha last known value shows native currency and date, never current price", () => {
+  const context = loadFunctions([], { formatNumber: (v) => String(v ?? "-") });
+  const html = context.marketPriceHtml({ current_price: 99, market_data: {
+    state: "STALE", reason: "QUOTA", as_of: 1700000000, last_known_price: 3.25,
+    last_known_price_quote_asset: "USDT", last_known_at: 1700000000,
+  } });
+  assert.match(html, /Dernière valeur connue/);
+  assert.match(html, /USDT au 2023-11-14T22:13:20.000Z/);
+  assert.match(html, /inutilisable comme cours actuel/);
+  assert.doesNotMatch(html, /<strong>99<\/strong>/);
+});
+
+test("a fresh Alpha payload expires in the browser after ten minutes", () => {
+  const context = loadFunctions([], { formatNumber: (v) => String(v ?? "-") });
+  const item = { current_price: 3, market_data: {
+    state: "FRESH", as_of: Date.now() / 1000 - 601, last_known_at: Date.now() / 1000 - 601,
+    last_known_price: 3, last_known_price_quote_asset: "USDC",
+  } };
+  assert.equal(context.alphaMarketState(item).state, "STALE");
+  assert.match(context.marketPriceHtml(item), /<strong>-<\/strong>/);
+});
+
+test("Alpha display rejects unknown states, invalid dates and injected metadata", () => {
+  const context = loadFunctions([], { formatNumber: (v) => String(v ?? "-") });
+  for (const as_of of [null, "bad", Infinity, Date.now() / 1000 + 60]) {
+    const item = { current_price: 4, market_data: { state: "FRESH", as_of } };
+    assert.equal(context.alphaMarketState(item).state, "UNAVAILABLE");
+  }
+  const html = context.marketDataStatusHtml({ market_data: {
+    state: '<img src=x onerror="bad">', reason: '<script>bad</script>',
+    last_known_price: 2, last_known_at: 1700000000,
+    last_known_price_quote_asset: '<img src=x onerror="bad">',
+    retry_after: '<script>bad</script>',
+  } });
+  assert.doesNotMatch(html, /<img|<script|onerror/);
+  assert.match(html, /devise inconnue/);
+});
+
+test("Alpha stale diagnostics reach desktop, mobile and the open detail", () => {
+  const row = watchRow({ symbol: "TOK0", sources: ["WATCH_CANDIDATE", "BINANCE_ALPHA"],
+    current_price: null, decision_engine: { decision: "WAIT" },
+    market_data: { state: "STALE", reason: "QUOTA", last_known_price: 3.25,
+      last_known_at: 1700000000, last_known_price_quote_asset: "USDT" } });
+  const { context } = cockpit([row]);
+  context.detailTitle.textContent = "TOK0";
+  context.renderRows([row]);
+  assert.match(context.resultsBody.innerHTML, /Dernière cotation trop ancienne/);
+  assert.match(context.detailContent.innerHTML, /Dernière valeur connue/);
+  context.openMobileCards = new Set();
+  context.factorChips = () => "";
+  vm.runInContext(functionSource("renderMobileCards"), context);
+  context.renderMobileCards([row]);
+  assert.match(context.mobileCards.innerHTML, /Limite de requêtes temporairement atteinte/);
+  assert.match(context.mobileCards.innerHTML, /inutilisable comme cours actuel/);
+});
+
+test("a Spot price retains its display without Alpha metadata", () => {
+  const context = loadFunctions([], { formatNumber: (v) => String(v ?? "-") });
+  assert.equal(context.marketPriceHtml({ current_price: 42 }), "<strong>42</strong>");
+});
+
+test("a Spot outage is not mislabeled as Alpha and unknown reasons are ignored", () => {
+  const context = loadFunctions([], { formatNumber: (v) => String(v ?? "-") });
+  const html = context.marketDataStatusHtml({ market_data: {
+    state: "UNAVAILABLE", service: "SPOT", reason: "constructor",
+  } });
+  assert.match(html, /Spot/);
+  assert.doesNotMatch(html, /Alpha|function Object|constructor/);
+});
+
+
+for (const [reason, label] of Object.entries({
+  INVALID_PAIR: "Paire de trading non disponible", NO_MARKET: "Aucun marché Alpha disponible",
+  OFFLINE: "Token actuellement hors ligne", DELISTED: "Token retiré de Binance Alpha",
+  OFFLINE_CONFLICT: "Statut du token et du marché contradictoire",
+  QUOTA: "Limite de requêtes temporairement atteinte", STALE: "Dernière cotation trop ancienne",
+})) {
+  test("structured Alpha reason reaches real cockpit rendering: " + reason, () => {
+    const row = watchRow({ symbol: "TEST", sources: ["WATCH_CANDIDATE", "BINANCE_ALPHA"],
+      current_price: null, decision_engine: { decision: "WAIT" },
+      error: '<img src=x onerror="alert(1)">',
+      market_data: { state: "UNAVAILABLE", reason, indicative_only: reason === "OFFLINE_CONFLICT" } });
+    const { context } = cockpit([row]);
+    context.detailTitle.textContent = "TEST";
+    context.renderRows([row]);
+    assert.ok(context.resultsBody.innerHTML.includes(label));
+    assert.ok(context.detailContent.innerHTML.includes(label));
+    assert.doesNotMatch(context.resultsBody.innerHTML, /<img src=x|<script/);
+    context.openMobileCards = new Set();
+    context.factorChips = () => "";
+    vm.runInContext(functionSource("renderMobileCards"), context);
+    context.renderMobileCards([row]);
+    assert.ok(context.mobileCards.innerHTML.includes(label));
+    if (reason === "OFFLINE_CONFLICT") assert.match(context.mobileCards.innerHTML, /Prix indicatif/);
+  });
+}

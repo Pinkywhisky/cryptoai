@@ -718,6 +718,70 @@ function reconcileOpenDetail() {
   else closeDetailPanel();
 }
 
+function alphaMarketState(item) {
+  const data = item?.market_data;
+  if (!data || typeof data !== "object") return null;
+  let state = ["FRESH", "PARTIAL", "STALE", "UNAVAILABLE", "INVALID"].includes(data.state)
+    ? data.state : "UNAVAILABLE";
+  const asOf = typeof data.as_of === "number" && Number.isFinite(data.as_of) ? data.as_of : null;
+  const now = Date.now() / 1000;
+  if (["FRESH", "PARTIAL"].includes(state)) {
+    if (asOf === null || asOf > now + 5) state = "UNAVAILABLE";
+    else if (now - asOf >= 600) state = "STALE";
+  }
+  return { ...data, state, age_seconds: asOf === null ? null : Math.max(0, Math.floor(now - asOf)) };
+}
+
+function marketDataStatusHtml(item) {
+  const data = alphaMarketState(item);
+  if (!data) return "";
+  const labels = {
+    FRESH: "Cours Alpha actuel", PARTIAL: "Cours actuel · Analyse Alpha partielle",
+    STALE: "Dernière cotation trop ancienne", UNAVAILABLE: "Données Alpha indisponibles",
+    INVALID: "Symbole absent du catalogue confirmé",
+  };
+  const reasons = {
+    QUOTA: "Limite de requêtes temporairement atteinte", SERVICE_UNAVAILABLE: "Service indisponible",
+    NETWORK_ERROR: "Erreur réseau", INVALID_RESPONSE: "Réponse invalide",
+    INVALID_PAIR: "Paire de trading non disponible", NO_MARKET: "Aucun marché Alpha disponible",
+    OFFLINE: "Token actuellement hors ligne", DELISTED: "Token retiré de Binance Alpha",
+    OFFLINE_CONFLICT: "Statut du token et du marché contradictoire",
+    STALE: "Dernière cotation trop ancienne", STALE_DATA: "Dernière cotation trop ancienne", AMBIGUOUS_SYMBOL: "Symbole ambigu",
+    INVALID_CONFIGURATION: "Configuration invalide", BUSY: "Actualisation en cours",
+    NO_CANDLES: "Bougies indisponibles", NOT_FOUND: "Symbole introuvable",
+  };
+  const service = data.service === "SPOT" ? "Spot" : data.service === "MARKET" ? "marche" : "Alpha";
+  let text = labels[data.state].replaceAll("Alpha", service);
+  const reason = data.reason ?? item.error_code;
+  if (Object.hasOwn(reasons, reason)) text += " · " + reasons[reason];
+  if (data.indicative_only === true) text += " · Prix indicatif · négociabilité non confirmée";
+  if (typeof data.retry_after === "number" && Number.isFinite(data.retry_after) && data.retry_after > 0) {
+    text += " · Réessai après " + Math.ceil(data.retry_after) + " s";
+  }
+  if (["STALE", "UNAVAILABLE"].includes(data.state)
+      && typeof data.last_known_price === "number" && Number.isFinite(data.last_known_price)
+      && data.last_known_price > 0) {
+    const quote = ["USDT", "USDC"].includes(data.last_known_price_quote_asset)
+      ? data.last_known_price_quote_asset : "devise inconnue";
+    const stamp = typeof data.last_known_at === "number" ? new Date(data.last_known_at * 1000) : null;
+    const dated = stamp && Number.isFinite(stamp.getTime()) ? stamp.toISOString() : "date inconnue";
+    text += " · Dernière valeur connue : " + formatFinancial(data.last_known_price, 6)
+      + " " + quote + " au " + dated + " · inutilisable comme cours actuel";
+  } else if (data.age_seconds !== null && Number.isFinite(data.age_seconds)) {
+    text += " · Âge " + data.age_seconds + " s";
+  }
+  return '<small class="market-data-status">' + escapeHtml(text) + "</small>";
+}
+
+function marketPriceHtml(item) {
+  const state = alphaMarketState(item);
+  const available = !state || ["FRESH", "PARTIAL"].includes(state.state);
+  const quote = state && ["USDT", "USDC"].includes(item.price_quote_asset)
+    ? " " + item.price_quote_asset : "";
+  return "<strong>" + formatNumber(available ? item.current_price : null, 6)
+    + (available ? quote : "") + "</strong>" + marketDataStatusHtml(item);
+}
+
 function renderRows(rows) {
   latestRows = [...rows];
   dashboardState.marketData = latestRows;
@@ -748,7 +812,7 @@ function renderRows(rows) {
       return `
         <tr data-row-index="${index}" class="unavailable-row">
           <td><div class="symbol-cell"><strong>${escapeHtml(item.symbol)}</strong>${marketSymbolMetaHtml(item)}</div></td>
-          <td><strong>${formatNumber(item.current_price, 6)}</strong></td>
+          <td>${marketPriceHtml(item)}</td>
           <td><span class="signal decision-wait">Analyse indisponible</span></td>
           <td>-</td>
           <td><span class="trend-badge trend-neutral">UNKNOWN</span></td>
@@ -768,7 +832,7 @@ function renderRows(rows) {
     return `
       <tr data-row-index="${index}" class="clickable-row">
         <td><div class="symbol-cell"><strong>${escapeHtml(item.symbol)}</strong>${marketSymbolMetaHtml(item)}</div></td>
-        <td><strong>${formatNumber(item.current_price, 6)}</strong></td>
+        <td>${marketPriceHtml(item)}</td>
         <td><span class="signal ${decisionClass(decision.decision)}">${escapeHtml(decision.decision_label ?? "-")}</span></td>
         <td><strong>${escapeHtml(decision.confidence ?? "-")}</strong><span class="score-unit">/100</span></td>
         <td><span class="trend-badge ${trendClass(trend)}">${escapeHtml(String(trend).replace('_', ' '))}</span></td>
@@ -864,6 +928,7 @@ function renderMobileCards(rows) {
           </div>
           ${marketSymbolMetaHtml(item)}
           <p>${escapeHtml(shortText(item.error, 90))}</p>
+          ${marketDataStatusHtml(item)}
         </article>
       `;
     }
@@ -888,7 +953,7 @@ function renderMobileCards(rows) {
             <span class="trend-badge ${trendClass(trend)}">${escapeHtml(String(trend).replace("_", " "))}</span>
           </div>
           <div class="market-card-grid">
-            <span>Prix</span><strong>${formatNumber(item.current_price, 6)}</strong>
+            <span>Prix</span>${marketPriceHtml(item)}
             <span>Setup</span><strong><span class="badge ${qualityClass(setupQuality)}">${escapeHtml(setupQuality)}</span></strong>
             <span>Timing technique</span><strong>${escapeHtml(triggerDecisionLabel(decision))}</strong>
             <span>Blocage</span><strong>${escapeHtml(shortText(blocking, 28))}</strong>
@@ -944,6 +1009,7 @@ function renderDetail(item) {
         <div class="detail-box">
           <h3>Analyse</h3>
           <p>${escapeHtml(item.error)}</p>
+          ${marketDataStatusHtml(item)}
           <p class="muted">Cette position reste visible dans le cockpit, mais aucune donnee Binance exploitable n'est disponible pour ce symbole.</p>
           <div class="detail-actions">${marketActionsHtml(item, true)}</div>
         </div>
@@ -1033,7 +1099,7 @@ function renderDetail(item) {
     <div class="detail-box">
       <h3>Niveaux clés</h3>
       <div class="kv-grid">
-        <span>Prix :</span><strong>${formatNumber(item.current_price, 6)}</strong>
+        <span>Prix :</span>${marketPriceHtml(item)}
         <span>Support :</span><strong>${formatNumber(item.support, 6)}</strong>
         <span>Résistance :</span><strong>${formatNumber(item.resistance, 6)}</strong>
         <span>Distance support :</span><strong>${formatNumber(item.distance_to_support_pct, 2)}%</strong>
@@ -1130,7 +1196,7 @@ function renderPositions(positions) {
   positionsBody.innerHTML = visiblePositions.map((position, index) => `
     <tr>
       <td><strong>${escapeHtml(position.symbol)}</strong></td>
-      <td>${renderMarketSourceBadge(position.market_source ?? position.source)}</td>
+      <td>${renderMarketSourceBadge(position.market_source ?? position.source)}${marketDataStatusHtml(position)}</td>
       <td><span class="badge ${position.status === "ACTIVE" ? "good" : position.status === "DUST" ? "medium" : "neutral"}">${escapeHtml(position.status ?? "-")}</span><small>${financialStatusLabel(position)}</small></td>
       <td>${formatFinancial(position.decimal_values?.remaining_quantity ?? position.quantity, 6)}</td>
       <td>${formatFinancial(position.average_buy_price, 6, "Coût inconnu")}</td>
@@ -1164,7 +1230,7 @@ function renderWatchCandidates(candidates) {
   watchBody.innerHTML = candidates.map((candidate, index) => `
     <tr>
       <td><strong>${escapeHtml(candidate.symbol)}</strong></td>
-      <td>${formatNumber(candidate.current_price, 6)}</td>
+      <td>${marketPriceHtml(candidate)}</td>
       <td>${formatNumber(candidate.target_buy_price, 6)}</td>
       <td>${formatNumber(candidate.invalidation_price, 6)}</td>
       <td><span class="badge ${candidate.priority === "HIGH" ? "bad" : candidate.priority === "LOW" ? "neutral" : "medium"}">${escapeHtml(candidate.priority ?? "-")}</span></td>

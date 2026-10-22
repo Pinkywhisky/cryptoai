@@ -1,0 +1,154 @@
+Crypto AI Assistant V5.3 — Lot 3C : corrections finales après contre-expertise
+22 octobre 2026, Europe/Paris ; feature/v5.3-hardening ; HEAD conservé 379c4f6.
+Aucun commit ni push. Aucun ordre, appel privé, synchronisation de compte,
+modification de .env, accès SQLite personnel ou migration.
+
+1. Causes
+Le budget ignorait Retry-After sur les 5xx et le transport réessayait après
+250 ms. La suspension finale était de cinq secondes ; suspend_alpha() plafonnait
+à 60 secondes. Les nouveaux codes Alpha n'étaient pas traduits par le cockpit.
+Les candidats de même symbole n'étaient pas tous conservés pour une sélection
+explicite. Les flags offline arrêtaient la résolution avant toute comparaison
+avec les marchés TRADING. Les indisponibilités structurelles recevaient un
+refresh_after de cinq secondes. Enfin, l'enveloppe exchange-info invalide
+suspendait tout Alpha, empêchant le repli USDT → USDC.
+
+2. Corrections
+Le budget durable observe Retry-After sur tous les HTTP 5xx Alpha. Formats
+entier delay-seconds et HTTP-date avec fuseau pris en charge. Un délai valide
+n'est pas plafonné à 60 secondes ; il est publié avant toute nouvelle réservation
+et classé ALPHA_UNAVAILABLE/SERVICE_UNAVAILABLE, distinct de QUOTA.
+Les délais négatifs, non finis, fractionnaires, dates invalides ou passées et
+valeurs dépassant l'arithmétique entière exacte des timestamps sont rejetés.
+Les grands délais représentables sont respectés : 120 secondes et un an sont
+testés. Sans délai valide, le repli existant reste borné : au plus deux appels,
+250 ms entre les tentatives et suspension de cinq secondes. 429/418 inchangés.
+Le cache respecte aussi les petits délais explicites : un accès à t=119 ne
+repousse plus une reprise autorisée à t=120 jusqu'à t=121.
+Les messages affichés proviennent de codes structurés, avec libellés statiques
+et échappement HTML ; aucun message libre du fournisseur n'est interprété.
+
+3. Symboles ambigus
+Le catalogue garde désormais tous les candidats, dédupliqués par identité stable.
+Deux actifs : AMBIGUOUS_SYMBOL, aucun prix automatique. Un actif et un retiré :
+même interdiction de substitution implicite ; une prévisualisation explicite du
+contrat actif est possible avec alphaId, chaîne et contrat complets quand connus.
+Une identité historique retirée conserve DELISTED. Aucun candidat exploitable :
+NO_MARKET sans prix. Une identité partielle ou non concordante ne sélectionne rien.
+Deux routes GET authentifiées préparent la sélection : /api/alpha/candidates et
+/api/alpha/quote-preview. Elles sont en lecture seule et ne créent aucune
+surveillance. La persistance et le sélecteur complet restent un lot séparé,
+car le modèle actuel est centré sur le symbole et la mission interdit les
+migrations. Contrat détaillé : lot3c-alpha-selection-api.txt.
+
+4. Conflits offline/TRADING
+Le statut du token et les marchés disponibles sont conservés séparément.
+offline=true avec marché TRADING frais produit OFFLINE_CONFLICT. Aucun ticker
+par défaut. verify_conflict=true autorise une vérification ponctuelle, bornée,
+mutualisée et mise en cache 600 secondes. Un ticker valide reste un prix indicatif
+daté : current_price=None, ticker={}, analyse indisponible, indicative_only=true,
+trading_authorized=false. Le prix n'entre pas dans la valorisation ni les décisions.
+La devise du prix indicatif validé reste correcte lors des lectures répétées,
+y compris après un repli USDT invalide → USDC valide. Le renouvellement du
+catalogue permet le retour normal quand offline redevient false.
+Un ancien statut hors ligne dans un catalogue périmé ne devient pas implicitement
+un statut actif : l'erreur temporaire de renouvellement reste visible.
+
+5. Cache et repli
+OFFLINE, DELISTED, NO_MARKET et OFFLINE_CONFLICT utilisent le prochain TTL utile
+des catalogues, au plus 600 secondes. Les refus de paire restent mémorisés.
+Le cache du cockpit compare les empreintes des catalogues déjà chargés en mémoire,
+sans requête supplémentaire ; un changement de contenu peut invalider un état
+négatif avant son échéance. Les empreintes sont stables entre workers, à contenu
+identique. Un worker sans catalogue chargé attend l'échéance déjà enregistrée.
+Un payload inchangé n'entraîne plus d'UPDATE SQLite. Le contrôle conditionnel
+sur updated_at demeure indispensable : un test couvre désormais l'invalidation
+entre le SELECT préalable et l'écriture, et empêche toute résurrection du cache.
+Une enveloppe malformée propre à get-exchange-info est traitée comme une source
+de métadonnées indisponible : pas de suspension globale ; le cache de défaut
+borne les nouvelles lectures, et le ticker reste intégralement validé. Repli
+USDT puis une seule USDC uniquement sur INVALID_PAIR. Une vraie panne réseau,
+un 5xx avec Retry-After ou un quota garde son circuit de protection commun.
+Aucune paire devinée n'est présentée comme une cotation validée avant le ticker.
+
+6. Fichiers concernés par cette intervention
+services/binance_alpha.py ; services/binance_api_budget.py ; services/alpha_cache.py ;
+services/market_data_errors.py ; services/market_cache.py ; main.py ; static/app.js ;
+tests/test_alpha_final_review.py (nouveau) ; tests/test_alpha_real_regressions.py ;
+tests/test_alpha_hardening.py ; tests/test_cockpit.js ; tools/verify_alpha_mutations.py.
+Deux assertions dans tests/test_api.py et tests/test_security.py acceptent aussi
+les textes français accentués introduits en parallèle dans les templates.
+Les changements concurrents de présentation (templates, CSS, icônes) ont été
+préservés ; ils ne sont pas attribués à ces corrections Alpha. Les changements
+préexistants du lot 3C sont également conservés.
+Rapports ajoutés : ce fichier, lot3c-alpha-selection-api.txt,
+lot3c-alpha-final-mutations.json et lot3c-alpha-final-validation.json.
+
+7. Validation Python et JavaScript
+Résultats finaux : 926/926 tests Python (55,56 s), 93/93 tests JavaScript,
+34/34 mutations détectées ; sources inchangées et toutes les copies isolées.
+Détails : lot3c-alpha-final-validation.json. La suite complète conserve les contrôles Spot,
+FIFO, PnL, sécurité et références comptables. Les scénarios nouveaux utilisent
+une horloge simulée, le transport HTTP simulé et le vrai budget SQLite temporaire.
+Les tests navigateur rendent les statuts dans les vues bureau, mobile et détail,
+y compris un message malveillant contenant une balise et un gestionnaire d'événement.
+L'audit interdit tout réseau réel, .env, SQLite personnelle et SQLite hors /tmp.
+Commandes :
+venv/bin/python -B tools/verify_offline.py
+node -e 'require("./tests/test_cockpit.js")'
+
+8. Mutations
+Les mutations existantes sont conservées et complétées pour Retry-After ignoré,
+plafond à 60 secondes, TTL de cinq secondes, identité contractuelle ignorée,
+conflit utilisé comme cours frais, non-invalidation par catalogue, UPDATE inutile,
+suspension globale sur enveloppe exchange-info, vérification ticker systématique
+et devise indicative perdue sur cache. Le test de résurrection du cache a été
+renforcé pour couvrir une véritable course lecture/écriture ; le contrôle
+préliminaire d'existence rendait son ancien scénario insuffisant pour ce mutant.
+Les essais ont lieu exclusivement dans des copies temporaires avec audit.
+Le rapport final détaille la détection et l'intégrité des sources originales.
+Commande :
+venv/bin/python -B tools/verify_alpha_mutations.py --node /home/glaronche/.nvm/versions/node/v24.16.0/bin/node --output /tmp/alpha-review-mutations-final.json
+
+9. Appels publics et observations
+Aucun nouvel appel public n'a été nécessaire pour cette intervention.
+Les fixtures réelles de la validation précédente ont été rejouées hors réseau.
+Elles retrouvent huit conflits offline/TRADING : CYS, LYN, ELON, WMTX, BTX,
+GAIX, PUMPBTC et SIREN. Ce sont des observations du catalogue conservé, pas une
+confirmation de leur état actuel. PUMP → DNA → CNPY est testé avec ces catalogues
+et des tickers simulés pour les deux tokens disponibles ; aucune suspension
+induite par PUMP. Aucun accès au portefeuille ni transaction.
+
+10. Avant/après observables dans les tests
+503 + Retry-After 120 : avant, retry immédiat et cinq secondes de suspension ;
+après, un seul appel, aucun nouvel appel avant t=120 et reprise à l'échéance.
+503 sans délai valide : deux tentatives bornées et suspension de cinq secondes.
+Plusieurs lecteurs du même token : une seule requête grâce au chargement partagé.
+Tokens différents simultanés : au plus deux requêtes déjà en vol peuvent finir ;
+aucune nouvelle réservation HTTP pendant la suspension commune.
+État négatif : avant, reconstruction toutes les cinq secondes ; après, pas de
+reconstruction ni UPDATE pendant l'attente du TTL, et réévaluation anticipée
+quand un catalogue de contenu différent est chargé.
+Contrat historique ambigu : aucun prix automatique ; sélection explicite limitée
+à la prévisualisation. Conflit offline/TRADING : statut explicite sans prix courant,
+avec prix indicatif uniquement sur vérification demandée.
+Enveloppe exchange-info invalide : repli borné désormais fonctionnel et aucun
+blocage global des tickers sains. Les résultats chiffrés sont simulés hors réseau.
+
+11. Risques restants et vérifications indépendantes
+L'interface complète et la persistance d'une identité Alpha immutable restent à
+réaliser dans un lot distinct. Les positions existantes ne sont jamais réécrites
+par ces routes de lecture. Un historique identifié seulement par symbole ne peut
+pas recevoir une certitude contractuelle qui n'a jamais été enregistrée ; si
+l'ancien contrat disparaît entièrement des catalogues, sa provenance ne peut pas
+être reconstruite automatiquement. Les booléens inconnus ne valent pas retrait.
+La disponibilité d'un ticker ne certifie pas la négociabilité. closeTime reste
+une fin de fenêtre du ticker, pas un horodatage certain du dernier trade.
+Les relectures de catalogue restent paresseuses, au TTL, sans tâche de fond.
+Demander à Claude Code de contre-vérifier les délais 120/date HTTP, grandes
+valeurs et concurrence ; les refus 429/418 ; tous les libellés et l'échappement ;
+BOB/BROCCOLI actifs, actif+retiré et absence de candidat ; les huit conflits,
+le prix indicatif hors valorisation et la réactivation ; le TTL, les empreintes
+multi-worker et l'absence d'UPDATE ; le repli sur enveloppe malformée ; la course
+invalidation/écriture et les mutations. Confirmer que ni le scoring, ni les
+décisions, ni le moteur comptable n'ont été modifiés. Aucun commit avant validation.

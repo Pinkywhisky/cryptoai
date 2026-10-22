@@ -44,7 +44,7 @@ def test_resolve_market_symbol_prefers_exact_spot_before_alpha(monkeypatch):
     def unexpected_alpha(symbol):
         raise AssertionError("Alpha should not be queried when exact Spot exists")
 
-    monkeypatch.setattr(symbols, "get_alpha_market_data", unexpected_alpha)
+    monkeypatch.setattr(symbols, "fetch_alpha_symbol", unexpected_alpha)
 
     result = symbols.resolve_market_symbol("MORPHOUSDC")
 
@@ -62,7 +62,7 @@ def test_resolve_market_symbol_base_fallback_usdc_before_alpha(monkeypatch):
     def unexpected_alpha(symbol):
         raise AssertionError("Alpha should not be queried when BASEUSDC exists")
 
-    monkeypatch.setattr(symbols, "get_alpha_market_data", unexpected_alpha)
+    monkeypatch.setattr(symbols, "fetch_alpha_symbol", unexpected_alpha)
 
     result = symbols.resolve_market_symbol("MORPHO")
 
@@ -77,7 +77,7 @@ def test_resolve_market_symbol_base_fallback_usdt_before_alpha(monkeypatch):
     def unexpected_alpha(symbol):
         raise AssertionError("Alpha should not be queried when BASEUSDT exists")
 
-    monkeypatch.setattr(symbols, "get_alpha_market_data", unexpected_alpha)
+    monkeypatch.setattr(symbols, "fetch_alpha_symbol", unexpected_alpha)
 
     result = symbols.resolve_market_symbol("MORPHO")
 
@@ -91,7 +91,7 @@ def test_resolve_market_symbol_detects_alpha(monkeypatch):
     monkeypatch.setattr(symbols, "get_exchange_symbols", lambda force=False: {"BTCUSDC"})
     monkeypatch.setattr(
         symbols,
-        "get_alpha_market_data",
+        "fetch_alpha_symbol",
         lambda symbol: {"valid": True, "symbol": "CKP", "market_source": "BINANCE_ALPHA"},
     )
 
@@ -110,7 +110,7 @@ def test_resolve_market_symbol_detects_alpha(monkeypatch):
 def test_resolve_market_symbol_rejects_unknown(monkeypatch):
     monkeypatch.setattr(symbols, "COMMON_USDC_SYMBOLS", set())
     monkeypatch.setattr(symbols, "get_exchange_symbols", lambda force=False: {"BTCUSDC"})
-    monkeypatch.setattr(symbols, "get_alpha_market_data", lambda symbol: {"valid": False})
+    monkeypatch.setattr(symbols, "fetch_alpha_symbol", lambda symbol: {"valid": False})
 
     result = symbols.resolve_market_symbol("NOPE")
 

@@ -7,13 +7,14 @@ import time
 from typing import Any
 
 import requests
-from services.binance_api_budget import budgeted_get
+from services.binance_api_budget import ApiQuotaError, budgeted_get
+from services.market_data_errors import MarketDataError
 
 from services.binance_alpha import (
     MARKET_SOURCE_ALPHA,
     MARKET_SOURCE_SPOT,
     MARKET_SOURCE_UNKNOWN,
-    get_alpha_market_data,
+    fetch_alpha_symbol,
 )
 
 
@@ -79,7 +80,9 @@ def _fetch_exchange_symbols() -> set[str]:
     response = budgeted_get(f"{BASE_URL}/api/v3/exchangeInfo", timeout=10)
     response.raise_for_status()
     payload = response.json()
-    symbols = payload.get("symbols", [])
+    symbols = payload.get("symbols") if isinstance(payload, dict) else None
+    if not isinstance(symbols, list) or any(not isinstance(x, dict) for x in symbols):
+        raise MarketDataError("INVALID_RESPONSE", service="SPOT")
     return {
         item["symbol"].upper()
         for item in symbols
@@ -119,8 +122,11 @@ def validate_symbol(symbol: str, quote_asset: str = "USDC") -> dict[str, Any]:
 
     try:
         exchange_symbols = get_exchange_symbols()
+    except ApiQuotaError as error:
+        return {"valid": None, **MarketDataError("QUOTA", service="SPOT",
+                                                retry_after=error.retry_after).payload()}
     except requests.RequestException:
-        return {"valid": False, "error": "Binance symbol validation unavailable"}
+        return {"valid": None, **MarketDataError("NETWORK_ERROR", service="SPOT", retry_after=5).payload()}
 
     if candidate not in exchange_symbols:
         return {"valid": False, "error": "Invalid symbol"}
@@ -162,9 +168,14 @@ def _resolve_spot_symbol(raw: str, quote_asset: str = "USDC") -> dict[str, Any] 
 
     try:
         exchange_symbols = get_exchange_symbols()
-    except Exception as exc:
-        logger.warning("[RESOLVER] Spot exchangeInfo unavailable (%s)", type(exc).__name__)
-        exchange_symbols = set()
+    except ApiQuotaError as error:
+        raise MarketDataError("QUOTA", service="SPOT", retry_after=error.retry_after) from None
+    except MarketDataError:
+        raise
+    except requests.RequestException:
+        raise MarketDataError("NETWORK_ERROR", service="SPOT", retry_after=5) from None
+    except (ValueError, TypeError):
+        raise MarketDataError("INVALID_RESPONSE", service="SPOT", retry_after=5) from None
 
     if exact_quote and raw in exchange_symbols:
         logger.info("[RESOLVER] %s resolved as exact Spot %s", raw, raw)
@@ -188,33 +199,26 @@ def resolve_market_symbol(symbol: str, quote_asset: str = "USDC") -> dict[str, A
             "error": "Symbole introuvable sur Binance Spot et Binance Alpha",
         }
 
-    spot = _resolve_spot_symbol(raw, quote_asset=quote_asset)
-    if spot:
-        return spot
-
     try:
-        alpha = get_alpha_market_data(raw)
+        spot = _resolve_spot_symbol(raw, quote_asset=quote_asset)
+        if spot:
+            return spot
+        # Identification needs the shared catalog, never ticker/klines requests.
+        alpha = fetch_alpha_symbol(raw)
+    except MarketDataError as error:
+        return {"valid": None, "symbol": raw, "market_source": MARKET_SOURCE_UNKNOWN,
+                **error.payload()}
     except requests.RequestException:
-        alpha = {"valid": False}
-    except Exception:
-        alpha = {"valid": False}
+        error = MarketDataError("NETWORK_ERROR", retry_after=5)
+        return {"valid": None, "symbol": raw, "market_source": MARKET_SOURCE_UNKNOWN,
+                **error.payload()}
 
     if alpha.get("valid"):
         resolved = str(alpha.get("symbol") or raw).upper()
-        logger.info("[RESOLVER] %s resolved as Alpha %s", raw, resolved)
         return {
-            "valid": True,
-            "symbol": resolved,
-            "resolved_symbol": resolved,
-            "base_asset": resolved,
-            "quote_asset": None,
+            "valid": True, "symbol": resolved, "resolved_symbol": resolved,
+            "base_asset": resolved, "quote_asset": alpha.get("quote_asset"),
             "market_source": MARKET_SOURCE_ALPHA,
         }
-
-    logger.info("[RESOLVER] %s unresolved on Spot and Alpha", raw)
-    return {
-        "valid": False,
-        "symbol": raw,
-        "market_source": MARKET_SOURCE_UNKNOWN,
-        "error": "Symbole introuvable sur Binance Spot et Binance Alpha",
-    }
+    return {"valid": False, "symbol": raw, "market_source": MARKET_SOURCE_UNKNOWN,
+            **MarketDataError("NOT_FOUND", service="MARKET").payload()}

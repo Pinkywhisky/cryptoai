@@ -1,0 +1,29 @@
+Préparation du commit Alpha — lot 3C
+
+Message prévu :
+fix(alpha): fiabiliser les marchés et les cotations Binance Alpha
+
+Contenu : transport public Alpha et quotas indépendants, Retry-After 5xx,
+catalogues USDT/USDC et identités stables, états hors ligne/retrait/ambiguïté,
+conflits offline/TRADING, fraîcheur des cotations et renouvellement du cache.
+Propagation des erreurs structurées dans les API et les données personnelles,
+sans modification des formules financières ni du moteur de décision.
+Le JavaScript ajouté protège l'affichage des prix périmés et traduit les états
+Alpha ; tout son diff appartient à ce commit fonctionnel.
+Les nouveaux tests, fixtures publiques, outils de mesure/mutation et rapports
+techniques Alpha sont inclus. .env.example ne contient que des paramètres de
+politique locale, sans identifiant ni secret ; .env reste hors périmètre.
+
+La CSS, les templates, les icônes et les deux assertions de textes accentués
+appartiennent exclusivement au futur commit graphique. Les styles
+.market-data-status sont un habillage facultatif : les messages Alpha restent
+présents et échappés avec la feuille de style de HEAD.
+Le contrat de sélection explicite reste limité à la prévisualisation en lecture
+seule : aucune nouvelle persistance d'identité, migration ou interface de choix.
+Les rapports lot3c-alpha-final-review.txt et lot3c-alpha-selection-api.txt
+précisent les limites et la contre-expertise précédente.
+
+Validation de préparation : effectuée sur une copie jetable de HEAD 379c4f6
+avec uniquement le patch Alpha ; résultats exacts dans le rapport de préparation
+remis à l'utilisateur. Les résultats historiques des autres rapports ne remplacent
+pas cette vérification de l'état isolé. Aucun commit n'est créé par cette préparation.

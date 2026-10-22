@@ -20,6 +20,32 @@ import requests
 from services.history import DB_PATH, init_db
 
 
+def alpha_retry_after(headers, now):
+    """Strict HTTP Retry-After; preserve valid delays instead of capping them.
+
+    Reject nonfinite/negative, fractional seconds and integers beyond exact
+    timestamp arithmetic. HTTP dates must explicitly include a timezone.
+    """
+    waits = []
+    for key, value in headers.items():
+        if str(key).lower() != "retry-after":
+            continue
+        raw = str(value).strip()
+        try:
+            if re.fullmatch(r"[0-9]{1,16}", raw):
+                wait = int(raw)
+            else:
+                date = parsedate_to_datetime(raw)
+                if date.tzinfo is None:
+                    continue
+                wait = date.timestamp() - now
+            if math.isfinite(wait) and 0 <= wait <= 2**53-1-now:
+                waits.append(max(1, math.ceil(wait)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return max(waits) if waits else None
+
+
 class ApiQuotaError(requests.RequestException):
     def __init__(self, reason, retry_after):
         super().__init__("Binance API calls suspended")
@@ -48,7 +74,12 @@ def endpoint_weight(path, params=None):
         if isinstance(symbols, (list, tuple)) and symbols:
             return 2 if len(symbols) <= 20 else 40 if len(symbols) <= 100 else 80
         return 80
-    return weights.get(path, 80)  # Local estimate for undocumented Alpha weights.
+    if path in {"/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list",
+                "/bapi/defi/v1/public/alpha-trade/get-exchange-info",
+                "/bapi/defi/v1/public/alpha-trade/ticker", "/bapi/defi/v1/public/alpha-trade/klines"}:
+        # Accounting unit is a LOCAL request, not an undocumented Binance weight.
+        return 1
+    return weights.get(path, 80)
 
 
 def network_for(url):
@@ -83,10 +114,18 @@ def _configured_limit(name, default):
 
 
 def _fallback(network):
+    if network == "ALPHA":
+        minute, minute_source = _configured_limit("ALPHA_RAW_REQUESTS", 60)
+        burst, burst_source = _configured_limit("ALPHA_BURST_PER_SECOND", 10)
+        return [
+            {"metric": "RAW_REQUESTS", "seconds": 60, "limit": minute,
+             "source": "LOCAL_POLICY" if minute_source != "CONFIGURED_FALLBACK" else minute_source},
+            {"metric": "RAW_REQUESTS", "seconds": 1, "limit": burst,
+             "source": "LOCAL_POLICY" if burst_source != "CONFIGURED_FALLBACK" else burst_source},
+        ]
     policies = {
         "SPOT": ("SPOT", 6000, 61000, 300),
         "SPOT_TESTNET": ("TESTNET", 600, 600, 60),
-        "ALPHA": ("ALPHA", 600, 600, 60),
         "SPOT_SNAPSHOT": ("SNAPSHOT", 12000, 600, 60),
         "SPOT_TESTNET_SNAPSHOT": ("TESTNET_SNAPSHOT", 600, 600, 60),
     }
@@ -133,6 +172,20 @@ class ApiBudget:
         if not row:
             return _fresh(network)
         state = json.loads(row[0])
+        if network == "ALPHA" and state.get("alpha_policy_version") != 1:
+            # Retain actual request counts and suspensions from the previous
+            # estimated-weight policy. Only the invented weight unit is retired.
+            state["windows"] = {k: v for k, v in state["windows"].items()
+                                if not k.startswith("REQUEST_WEIGHT:")}
+            for record in state.get("outstanding", {}).values():
+                record["weight"] = 1
+                record["charged"] = {k: v for k, v in record.get("charged", {}).items()
+                                     if not k.startswith("REQUEST_WEIGHT:")}
+            state["weight"] = state["requests"]
+            for endpoint in state["by_endpoint"].values():
+                endpoint["weight"] = endpoint["requests"]
+            state["limits"] = _fallback(network)
+            state["alpha_policy_version"] = 1
         # Upgrade the JSON policy, never the financial schema, retaining bans and
         # all old consumption. A header reports a count, never a numeric ceiling.
         if state.get("policy_version") != 2:
@@ -193,7 +246,7 @@ class ApiBudget:
     def reserve(self, url, params=None):
         network = network_for(url)
         path = urlsplit(url).path
-        weight = endpoint_weight(path, params)
+        weight = 1 if network == "ALPHA" else endpoint_weight(path, params)
         token = uuid.uuid4().hex
         suspended = None
         with closing(self._open()) as connection, connection:
@@ -286,9 +339,37 @@ class ApiBudget:
                     # Unknown intervals are observable, not invented 600-unit limits.
                 except (ValueError, OverflowError):
                     state["invalid_headers"] += 1
+            if network == "ALPHA":
+                # Only an explicit exhausted counter + delta reset is actionable.
+                # These optional HTTP headers do not publish Binance Alpha weights
+                # or justify importing Spot limits.
+                remaining = [v for k, v in values if k == "ratelimit-remaining"]
+                resets = [v for k, v in values if k == "ratelimit-reset"]
+                if remaining or resets:
+                    matched = True
+                    try:
+                        if not remaining or not resets or any(
+                                not re.fullmatch(r"[0-9]{1,6}", v) for v in remaining+resets):
+                            raise ValueError
+                        if min(map(int, remaining)) == 0:
+                            wait = max(map(int, resets))
+                            if not 1 <= wait <= 86400:
+                                raise ValueError
+                            if now+wait >= state["blocked_until"]:
+                                state["blocked_until"] = now+wait
+                                state["block_reason"] = "RATE_LIMIT"
+                    except ValueError:
+                        state["invalid_headers"] += 1
             if not matched:
                 state["missing_headers"] += 1
             state["outstanding"].pop(token, None)
+            if network == "ALPHA" and 500 <= status < 600:
+                wait = alpha_retry_after(headers, now)
+                if wait is not None:
+                    if now+wait >= state["blocked_until"]:
+                        state["blocked_until"] = now+wait
+                        state["block_reason"] = "ALPHA_UNAVAILABLE"
+                    suspended = ApiQuotaError(state["block_reason"], state["blocked_until"]-now)
             if status in {429, 418}:
                 default = 60 if status == 429 else 3 * 86400
                 waits = []
@@ -313,6 +394,21 @@ class ApiBudget:
             self._save(connection, network, state)
         if suspended:
             raise suspended
+
+    def suspend_alpha(self, reason, seconds=5):
+        """Short shared outage cooldown; never shorten an actual rate-limit ban."""
+        if reason not in {"ALPHA_NETWORK", "ALPHA_UNAVAILABLE", "ALPHA_INVALID_RESPONSE"}:
+            raise ValueError("Invalid Alpha suspension reason")
+        seconds = float(seconds)
+        if not math.isfinite(seconds) or not 0 <= seconds <= 2**53-1-self.clock():
+            raise ValueError("Invalid Alpha suspension duration")
+        seconds = max(1, seconds)
+        with closing(self._open()) as connection, connection:
+            now = self.clock()
+            state = self._read(connection, "ALPHA")
+            if now+seconds > state["blocked_until"]:
+                state["blocked_until"], state["block_reason"] = now+seconds, reason
+            self._save(connection, "ALPHA", state)
 
     def finish_failed(self, network, token):
         # Timeouts can consume remote weight. Leave unconfirmed usage charged.
@@ -394,6 +490,7 @@ class ApiBudget:
         result.update(safety=self.safety, blocked_until=state["blocked_until"],
                       block_reason=state["block_reason"] if state["blocked_until"] > now else None,
                       retry_after=max(0, math.ceil(state["blocked_until"] - now)), limits=state["limits"])
+        result["accounting_unit"] = "LOCAL_REQUESTS" if network == "ALPHA" else "BINANCE_WEIGHT"
         result["windows"] = {k: dict(v) for k, v in state["windows"].items()}
         return result
 
