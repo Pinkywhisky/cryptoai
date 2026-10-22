@@ -91,7 +91,11 @@ def compute_ai_accuracy(entries: list[dict[str, Any]]) -> dict[str, Any]:
     evaluated = []
     correct = 0
     for entry in _closed(entries):
-        decision = str(entry.get("ai_snapshot", {}).get("decision", {}).get("decision") or entry.get("decision_type") or "").upper()
+        # Historical snapshots may be absent or contain a non-object JSON value.
+        snapshot = entry.get("ai_snapshot")
+        snapshot_decision = snapshot.get("decision") if isinstance(snapshot, dict) else None
+        recorded_decision = snapshot_decision.get("decision") if isinstance(snapshot_decision, dict) else None
+        decision = str(recorded_decision or entry.get("decision_type") or "").upper()
         result = str(entry.get("result_status") or "").upper()
         if not decision or result not in {"WIN", "LOSS"}:
             continue
