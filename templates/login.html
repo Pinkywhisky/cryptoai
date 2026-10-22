@@ -3,26 +3,30 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
     <title>Connexion - Crypto AI Assistant</title>
     <link rel="stylesheet" href="/static/style.css">
   </head>
-  <body>
-    <main class="shell">
-      <section class="panel">
+  <body class="auth-body">
+    <main class="auth-shell">
+      <section class="auth-card">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M8 20.5l5-5 3.5 3.5L24 11.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <h1>Crypto AI Assistant</h1>
         {% if configured %}
-        <p>Connexion a votre espace personnel.</p>
-        {% if expired %}<p role="status">Votre session a expire. Reconnectez-vous.</p>{% endif %}
-        {% if error %}<p role="alert">{{ error }}</p>{% endif %}
-        <form method="post" action="/login">
+        <p class="auth-lead">Bon retour ! Connectez-vous à votre espace personnel.</p>
+        {% if expired %}<p class="auth-notice" role="status">Votre session a expiré. Reconnectez-vous.</p>{% endif %}
+        {% if error %}<p class="auth-error" role="alert">{{ error }}</p>{% endif %}
+        <form method="post" action="/login" class="auth-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <label>Mot de passe
+          <label class="field">
+            <span>Mot de passe</span>
             <input type="password" name="password" autocomplete="current-password" required maxlength="1024" autofocus>
           </label>
-          <button type="submit">Se connecter</button>
+          <button type="submit" class="btn-primary">Se connecter</button>
         </form>
+        <p class="auth-footnote">Aide à la décision personnelle, sans trading automatique.</p>
         {% else %}
-        <p role="alert">Acces personnel non configure. Definissez CRYPTOAI_AUTH_PASSWORD_HASH dans l'environnement du serveur, puis redemarrez l'application.</p>
+        <p class="auth-error" role="alert">Accès personnel non configuré. Définissez CRYPTOAI_AUTH_PASSWORD_HASH dans l'environnement du serveur, puis redémarrez l'application.</p>
         {% endif %}
       </section>
     </main>

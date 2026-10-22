@@ -165,7 +165,8 @@ def test_expiry_is_absolute_and_cookie_tampering_fails_closed(secured_app):
     response = client.get("/api/watchlist")
     assert response.status_code == 401
     assert response.json()["code"] == "AUTHENTICATION_REQUIRED"
-    assert "session a expire" in client.get("/login?expired=1").text
+    expired_page = client.get("/login?expired=1").text
+    assert any(label in expired_page for label in ("session a expire", "session a expiré"))
     bad = TestClient(app, base_url=ORIGIN)
     bad.cookies.set(COOKIE_NAME, "forged-session-cookie")
     assert bad.get("/api/watchlist").status_code == 401

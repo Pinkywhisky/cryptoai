@@ -1,0 +1,43 @@
+Préparation du commit graphique — Crypto AI Assistant
+
+Message prévu :
+feat(ui): moderniser le cockpit Crypto AI
+
+Périmètre : static/style.css, templates/dashboard.html, templates/login.html,
+les treize SVG locaux de static/icons/, tests/test_api.py et
+tests/test_security.py (uniquement les assertions de textes accentués).
+Aucune modification JavaScript n'est nécessaire à cette refonte : le diff
+static/app.js du lot 3C concerne exclusivement les protections Alpha.
+Les identifiants DOM et les champs de formulaire existants sont conservés.
+Les valeurs MEDIUM/HIGH/LOW restent explicites malgré leurs libellés traduits.
+Les champs CSRF, actions login/logout et attributs de sécurité sont préservés.
+Les SVG ne contiennent ni script, événement, image externe, entité XML ou référence
+active. Aucun chargement de police distante n'est ajouté par la pile CSS locale.
+Les règles .market-data-status ne font que présenter les messages fonctionnels
+Alpha lorsqu'ils existent ; elles sont sans effet sur HEAD sans le commit Alpha.
+
+Contrôles visuels à effectuer avant publication (non certifiés par les tests) :
+- Connexion : mot de passe masqué, focus, erreur, session expirée, configuration
+  absente ; contraste du texte et des boutons, clarté du retour utilisateur.
+- Cockpit : synthèse, tableau, badges, filtre, tri, défilement, détails latéraux,
+  états de chargement/vide/erreur et longues valeurs de prix ou de symboles.
+- Positions : formulaires ajout/modification, valeurs financières, coût inconnu,
+  prix indisponible, affichage des sources et alignement sur petit écran.
+- Surveillances : ajout rapide, champs optionnels, sélection de priorité,
+  modification/suppression, symboles ambigus ou hors ligne et erreurs structurées.
+- Journal : ouverture/fermeture de la modale, formulaire, historique, longues
+  notes, erreurs de validation et accès clavier.
+- Mobile : barre supérieure, menu, cartes dépliées, boutons icônes et noms
+  accessibles, débordements, modales et orientation portrait/paysage.
+- Messages : quota, panne réseau/service, paire absente, retrait, hors ligne,
+  conflit offline/TRADING, prix périmé/indicatif ; lisibilité sans couleur seule.
+- Accessibilité : navigation clavier, focus visible, zoom 200 %, réduction des
+  animations, contrastes et modes clair/sombre selon les media queries existantes.
+- Commandes de synchronisation existantes : présentation des boutons/confirmations
+  uniquement ; ne pas lancer de synchronisation privée pour une revue visuelle.
+
+Fichiers à ouvrir pour cette revue : les deux templates, static/style.css,
+static/icons/*.svg. Vérifier aussi les fragments HTML générés par static/app.js,
+dans sa version Alpha lorsqu'on teste la combinaison, sans les attribuer au
+commit graphique. Les tests DOM ne remplacent pas des captures et une interaction
+réelle dans un navigateur. Aucune validation visuelle humaine n'est revendiquée.

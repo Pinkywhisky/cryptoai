@@ -544,7 +544,7 @@ def test_dashboard_has_tooltips() -> None:
     assert "Actualiser" in response.text
     assert "Gestion" in response.text
     assert "Trend global" in response.text
-    assert "Etat du timing d'entree" in response.text
+    assert any(label in response.text for label in ("Etat du timing d'entree", "État du timing d'entrée"))
     assert 'aria-haspopup="true"' in response.text
     assert "Paramètres API" not in response.text
 

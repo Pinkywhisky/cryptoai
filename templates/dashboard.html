@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
     <title>{{ title }}</title>
     <meta name="session-expires-in" content="{{ session_seconds }}">
     <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
@@ -10,13 +11,16 @@
   <body>
     <main class="shell">
       <header class="mobile-topbar" aria-label="Navigation mobile">
-        <div>
-          <strong>Crypto AI v{{ app_version }}</strong>
-          <span id="mobileStatusText">Pret</span>
+        <div class="mobile-brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M8 20.5l5-5 3.5 3.5L24 11.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div>
+            <strong>Crypto AI</strong>
+            <span id="mobileStatusText">Prêt</span>
+          </div>
         </div>
         <div class="mobile-top-actions">
-          <button id="mobileRefreshButton" type="button" aria-label="Actualiser">Refresh</button>
-          <button id="mobileMenuButton" type="button" aria-label="Ouvrir le menu" aria-expanded="false">Menu</button>
+          <button id="mobileRefreshButton" class="btn-ghost icon icon-only icon-refresh" type="button" aria-label="Actualiser">Actualiser</button>
+          <button id="mobileMenuButton" class="btn-ghost icon icon-only icon-menu" type="button" aria-label="Ouvrir le menu" aria-expanded="false">Menu</button>
         </div>
       </header>
 
@@ -27,30 +31,34 @@
             <strong>Menu</strong>
             <span>Crypto AI Assistant v{{ app_version }}</span>
           </div>
-          <button id="mobileMenuClose" type="button" aria-label="Fermer le menu">X</button>
+          <button id="mobileMenuClose" class="btn-ghost icon icon-only icon-close" type="button" aria-label="Fermer le menu">Fermer</button>
         </div>
         <div class="mobile-menu-list">
-          <button id="mobileMarketButton" type="button">Marche</button>
-          <button id="mobileJournalButton" type="button">Journal</button>
-          <button id="mobileAlertsButton" type="button">Alertes</button>
-          <button id="mobileSettingsButton" type="button">Parametres</button>
-          <form method="post" action="/logout">
+          <button id="mobileMarketButton" class="menu-item icon icon-chart" type="button">Marché</button>
+          <button id="mobileAlertsButton" class="menu-item icon icon-bell" type="button">Alertes</button>
+          <button id="mobileJournalButton" class="menu-item icon icon-journal" type="button">Journal</button>
+          <button id="mobileSettingsButton" class="menu-item icon icon-settings" type="button">Paramètres</button>
+          <form method="post" action="/logout" class="menu-logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Deconnexion</button>
+            <button type="submit" class="menu-item icon icon-logout">Déconnexion</button>
           </form>
         </div>
       </nav>
+
       <header class="topbar">
-        <div>
-          <h1>Crypto AI Assistant v{{ app_version }}</h1>
-          <p>Aide à la décision personnelle, sans trading automatique</p>
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M8 20.5l5-5 3.5 3.5L24 11.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div>
+            <h1>Crypto AI Assistant <span class="version-chip">v{{ app_version }}</span></h1>
+            <p>Aide à la décision personnelle, sans trading automatique</p>
+          </div>
         </div>
         <nav class="top-actions primary-nav" aria-label="Navigation principale">
-          <button id="journalModalButton" type="button">Journal</button>
-          <button id="settingsModalButton" type="button">Parametres</button>
+          <button id="journalModalButton" class="btn-ghost icon icon-journal" type="button">Journal</button>
+          <button id="settingsModalButton" class="btn-ghost icon icon-settings" type="button">Paramètres</button>
           <form method="post" action="/logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Deconnexion</button>
+            <button type="submit" class="btn-ghost icon icon-logout">Déconnexion</button>
           </form>
         </nav>
         <div class="legacy-actions" hidden>
@@ -78,7 +86,7 @@
         <option value="symbol">Analyse d'un symbole</option>
       </select>
 
-      <section class="controls dashboard-summary" aria-label="Synthese du dashboard">
+      <section class="controls dashboard-summary" aria-label="Synthèse du portefeuille">
         <div id="portfolioSummary" class="portfolio-summary">
           <div class="portfolio-metric portfolio-main">
             <span>Portefeuille</span>
@@ -87,30 +95,36 @@
           </div>
         </div>
         <div class="system-status">
-          <span id="statusText" class="status-badge">Prêt</span>
-          <span id="nextRefreshText" class="status-badge">Prochain refresh : -</span>
-          <span id="binanceStatusText" class="status-badge">API Binance privée : -</span>
-          <span id="syncJobStatus" class="status-badge" role="status" aria-live="polite"></span>
-          <button id="syncCancelButton" type="button" hidden>Annuler la synchronisation</button>
-          <button id="syncResumeButton" type="button" hidden>Reprendre</button>
-          <details>
-            <summary>Importer un historique Binance</summary>
-            <p>La synchronisation normale suit les marchés connus et les actifs détenus. Les marchés historiques inconnus nécessitent un import explicite.</p>
-            <label>Marchés connus, séparés par des virgules
-              <input id="syncBootstrapSymbols" type="text" maxlength="120000" placeholder="BTCUSDC, ETHUSDT">
-            </label>
-            <label><input id="syncBootstrapFull" type="checkbox"> Explorer tout le catalogue (coûteux, confirmation requise)</label>
-            <button id="syncBootstrapPreviewButton" type="button">Prévisualiser le coût</button>
-            <p id="syncBootstrapPreview" role="status"></p>
-            <button id="syncBootstrapStart" type="button" disabled>Démarrer l'import historique</button>
-          </details>
-
+          <div class="status-list">
+            <span id="statusText" class="status-badge status-live">Prêt</span>
+            <span id="nextRefreshText" class="status-badge">Prochain refresh : -</span>
+            <span id="binanceStatusText" class="status-badge">API Binance privée : -</span>
+            <span id="syncJobStatus" class="status-badge" role="status" aria-live="polite"></span>
+          </div>
+          <div class="status-actions">
+            <button id="syncCancelButton" type="button" hidden>Annuler la synchronisation</button>
+            <button id="syncResumeButton" type="button" hidden>Reprendre</button>
+            <details class="sync-import">
+              <summary class="icon icon-download">Importer un historique Binance</summary>
+              <div class="sync-import-body">
+                <p>La synchronisation normale suit les marchés connus et les actifs détenus. Les marchés historiques inconnus nécessitent un import explicite.</p>
+                <label class="field">
+                  <span>Marchés connus, séparés par des virgules</span>
+                  <input id="syncBootstrapSymbols" type="text" maxlength="120000" placeholder="BTCUSDC, ETHUSDT">
+                </label>
+                <label class="check-field"><input id="syncBootstrapFull" type="checkbox"> Explorer tout le catalogue (coûteux, confirmation requise)</label>
+                <button id="syncBootstrapPreviewButton" type="button">Prévisualiser le coût</button>
+                <p id="syncBootstrapPreview" role="status"></p>
+                <button id="syncBootstrapStart" class="btn-primary" type="button" disabled>Démarrer l'import historique</button>
+              </div>
+            </details>
+          </div>
         </div>
       </section>
 
       <section id="alertsContainer" class="ai-alerts-panel compact-panel" aria-label="Alertes IA">
         <div class="section-header">
-          <h2>Alertes IA</h2>
+          <h2 class="icon icon-bell">Alertes IA</h2>
         </div>
         <div id="aiAlertsList" class="ai-alerts-list"></div>
       </section>
@@ -118,37 +132,37 @@
       <section class="workspace">
         <div class="table-wrap" aria-label="Scan marché">
           <div class="section-header">
-            <h2>Marché</h2>
+            <h2 class="icon icon-chart">Marché</h2>
             <div class="section-actions">
-              <button id="marketRefreshButton" type="button">Rafraîchir</button>
-              <button id="marketSyncButton" type="button">Synchroniser Binance</button>
+              <button id="marketRefreshButton" class="icon icon-refresh" type="button">Rafraîchir</button>
+              <button id="marketSyncButton" class="icon icon-sync" type="button">Synchroniser Binance</button>
             </div>
           </div>
           <form id="quickWatchForm" class="quick-watch-form" aria-label="Surveiller une crypto">
-            <input name="symbol" placeholder="BTC ou BTCUSDC" required>
-            <input name="target_buy_price" type="number" step="any" placeholder="Prix visé">
-            <select name="priority">
-              <option>MEDIUM</option>
-              <option>HIGH</option>
-              <option>LOW</option>
+            <input name="symbol" placeholder="Crypto : BTC ou BTCUSDC" aria-label="Symbole à surveiller" required>
+            <input name="target_buy_price" type="number" step="any" placeholder="Prix visé (optionnel)" aria-label="Prix visé">
+            <select name="priority" aria-label="Priorité">
+              <option value="MEDIUM">Priorité moyenne</option>
+              <option value="HIGH">Priorité haute</option>
+              <option value="LOW">Priorité basse</option>
             </select>
-            <button type="submit">Surveiller</button>
+            <button type="submit" class="btn-primary icon icon-eye">Surveiller</button>
             <span id="marketFeedback" class="form-feedback" role="status" aria-live="polite"></span>
           </form>
-          <div id="mobileCards" class="mobile-cards" aria-label="Cartes marche mobile"></div>
+          <div id="mobileCards" class="mobile-cards" aria-label="Cartes marché mobile"></div>
           <div class="desktop-table-scroll">
           <table class="desktop-table">
             <thead>
               <tr>
                 <th data-tooltip="Crypto analysée, par exemple BTCUSDC.">Symbole</th>
                 <th data-tooltip="Dernier prix récupéré depuis Binance.">Prix</th>
-                <th data-tooltip="Decision V4 issue du contexte, setup, trigger, risque et marche global.">Decision</th>
-                <th data-tooltip="Coherence des signaux entre eux, et non probabilite de gain.">Confiance</th>
+                <th data-tooltip="Décision issue du contexte, du setup, du trigger, du risque et du marché global.">Décision</th>
+                <th data-tooltip="Cohérence des signaux entre eux, et non probabilité de gain.">Confiance</th>
                 <th data-tooltip="Tendance globale basée sur moyennes mobiles, pente, prix et momentum multi-timeframe.">Trend global</th>
-                <th data-tooltip="Qualité globale du point d’entrée selon le risk/reward, la tendance et les niveaux clés.">Setup quality</th>
-                <th data-tooltip="Etat du timing d'entree technique ; la decision et le risque conditionnent toute entree.">Timing technique</th>
-                <th data-tooltip="Score sur 100 basé sur tendance, momentum, volume, risk/reward et patterns.">Score global</th>
-                <th data-tooltip="Premier facteur qui bloque ou degrade la decision.">Blocage</th>
+                <th data-tooltip="Qualité globale du point d’entrée selon le risk/reward, la tendance et les niveaux clés.">Setup</th>
+                <th data-tooltip="État du timing d'entrée technique ; la décision et le risque conditionnent toute entrée.">Timing</th>
+                <th data-tooltip="Score sur 100 basé sur tendance, momentum, volume, risk/reward et patterns.">Score</th>
+                <th data-tooltip="Premier facteur qui bloque ou dégrade la décision.">Blocage</th>
               </tr>
             </thead>
             <tbody id="resultsBody"></tbody>
@@ -160,43 +174,45 @@
           <div class="detail-header">
             <div>
               <h2 id="detailTitle">Détail</h2>
-              <p id="detailSubtitle">Clique une ligne du tableau</p>
+              <p id="detailSubtitle">Cliquez sur une ligne du tableau</p>
             </div>
-            <button id="closeDetailButton" type="button">Fermer</button>
+            <button id="closeDetailButton" class="btn-ghost icon icon-close" type="button">Fermer</button>
           </div>
           <div id="detailContent" class="detail-content"></div>
         </aside>
       </section>
 
-      <section id="positionsModal" class="modal">
+      <section id="positionsModal" class="modal" aria-label="Mes positions">
         <div class="modal-content panel">
           <div class="modal-header">
             <h2>Mes positions</h2>
             <div class="modal-actions">
-              <button id="addPositionButton" type="button">+ Ajouter une position</button>
-              <button id="syncPositionsButton" type="button">Synchroniser Binance</button>
-              <button type="button" data-close-modal>Fermer</button>
+              <button id="addPositionButton" class="icon icon-plus" type="button">Ajouter une position</button>
+              <button id="syncPositionsButton" class="icon icon-sync" type="button">Synchroniser Binance</button>
+              <button type="button" class="btn-ghost icon icon-close" data-close-modal>Fermer</button>
             </div>
           </div>
           <form id="positionForm" class="compact-form">
             <input name="id" type="hidden">
-            <input name="symbol" placeholder="BTCUSDC" required>
-            <input name="quantity" type="number" step="any" placeholder="Quantité" required>
-            <input name="average_buy_price" type="number" step="any" placeholder="Prix moyen" required>
-            <input name="invested_amount" type="number" step="any" placeholder="Montant investi" required>
-            <select name="strategy_type">
-              <option value="swing">swing</option>
-              <option value="scalp">scalp</option>
-              <option value="DCA">DCA</option>
-              <option value="spéculatif">spéculatif</option>
-              <option value="long terme">long terme</option>
-            </select>
-            <input name="take_profit_1" type="number" step="any" placeholder="TP1">
-            <input name="take_profit_2" type="number" step="any" placeholder="TP2">
-            <input name="stop_loss" type="number" step="any" placeholder="Stop-loss">
-            <input name="max_loss_accepted_pct" type="number" step="any" placeholder="Perte max %">
-            <input name="note" placeholder="Note">
-            <button type="submit">Enregistrer</button>
+            <label class="field"><span>Symbole</span><input name="symbol" placeholder="BTCUSDC" required></label>
+            <label class="field"><span>Quantité</span><input name="quantity" type="number" step="any" placeholder="0,05" required></label>
+            <label class="field"><span>Prix moyen</span><input name="average_buy_price" type="number" step="any" placeholder="61250" required></label>
+            <label class="field"><span>Montant investi</span><input name="invested_amount" type="number" step="any" placeholder="3062,5" required></label>
+            <label class="field"><span>Stratégie</span>
+              <select name="strategy_type">
+                <option value="swing">Swing</option>
+                <option value="scalp">Scalp</option>
+                <option value="DCA">DCA</option>
+                <option value="spéculatif">Spéculatif</option>
+                <option value="long terme">Long terme</option>
+              </select>
+            </label>
+            <label class="field"><span>TP1</span><input name="take_profit_1" type="number" step="any" placeholder="Optionnel"></label>
+            <label class="field"><span>TP2</span><input name="take_profit_2" type="number" step="any" placeholder="Optionnel"></label>
+            <label class="field"><span>Stop-loss</span><input name="stop_loss" type="number" step="any" placeholder="Optionnel"></label>
+            <label class="field"><span>Perte max %</span><input name="max_loss_accepted_pct" type="number" step="any" placeholder="Optionnel"></label>
+            <label class="field field-wide"><span>Note</span><input name="note" placeholder="Pourquoi cette position ?"></label>
+            <div class="form-submit"><button type="submit" class="btn-primary">Enregistrer</button></div>
           </form>
           <div class="mini-table-wrap">
             <table>
@@ -204,7 +220,7 @@
                 <tr>
                   <th data-tooltip="Crypto analysée, par exemple BTCUSDC.">Symbole</th>
                   <th>Source</th>
-                  <th>Status</th>
+                  <th>Statut</th>
                   <th data-tooltip="Quantité détenue.">Quantité</th>
                   <th data-tooltip="Prix moyen auquel la position a été achetée.">Prix moyen</th>
                   <th data-tooltip="Performance actuelle par rapport au prix moyen d’achat.">Gain/Perte %</th>
@@ -221,28 +237,30 @@
         </div>
       </section>
 
-      <section id="watchModal" class="modal">
+      <section id="watchModal" class="modal" aria-label="Cryptos à surveiller">
         <div class="modal-content panel">
           <div class="modal-header">
             <h2>Cryptos à surveiller</h2>
             <div class="modal-actions">
-              <button id="addWatchButton" type="button">+ Ajouter une crypto</button>
-              <button type="button" data-close-modal>Fermer</button>
+              <button id="addWatchButton" class="icon icon-plus" type="button">Ajouter une crypto</button>
+              <button type="button" class="btn-ghost icon icon-close" data-close-modal>Fermer</button>
             </div>
           </div>
           <form id="watchForm" class="compact-form">
             <input name="id" type="hidden">
-            <input name="symbol" placeholder="BTCUSDC" required>
-            <input name="target_buy_price" type="number" step="any" placeholder="Prix visé">
-            <input name="invalidation_price" type="number" step="any" placeholder="Invalidation">
-            <select name="priority">
-              <option>MEDIUM</option>
-              <option>HIGH</option>
-              <option>LOW</option>
-            </select>
-            <input name="reason" placeholder="Raison">
-            <input name="note" placeholder="Note">
-            <button type="submit">Enregistrer</button>
+            <label class="field"><span>Symbole</span><input name="symbol" placeholder="BTCUSDC" required></label>
+            <label class="field"><span>Prix visé</span><input name="target_buy_price" type="number" step="any" placeholder="Optionnel"></label>
+            <label class="field"><span>Invalidation</span><input name="invalidation_price" type="number" step="any" placeholder="Optionnel"></label>
+            <label class="field"><span>Priorité</span>
+              <select name="priority">
+                <option value="MEDIUM">Moyenne</option>
+                <option value="HIGH">Haute</option>
+                <option value="LOW">Basse</option>
+              </select>
+            </label>
+            <label class="field field-wide"><span>Raison</span><input name="reason" placeholder="Ce qui vous intéresse"></label>
+            <label class="field field-wide"><span>Note</span><input name="note" placeholder="Optionnel"></label>
+            <div class="form-submit"><button type="submit" class="btn-primary">Enregistrer</button></div>
           </form>
           <div id="watchFeedback" class="form-feedback" role="status" aria-live="polite"></div>
           <div class="mini-table-wrap">
@@ -265,61 +283,69 @@
         </div>
       </section>
 
-      <section id="journalModal" class="modal">
+      <section id="journalModal" class="modal" aria-label="Journal">
         <div class="modal-content panel">
           <div class="modal-header">
-            <h2>Journal</h2>
+            <h2>Journal de trading</h2>
             <div class="modal-actions">
-              <button id="addJournalButton" type="button">+ Ajouter une entrée</button>
-              <button type="button" data-close-modal>Fermer</button>
+              <button id="addJournalButton" class="icon icon-plus" type="button">Ajouter une entrée</button>
+              <button type="button" class="btn-ghost icon icon-close" data-close-modal>Fermer</button>
             </div>
           </div>
           <form id="journalForm" class="compact-form">
-            <input name="symbol" placeholder="BTCUSDC" required>
-            <select name="decision_type">
-              <option value="WAIT">Attendre</option>
-              <option value="BUY">Achat</option>
-              <option value="SELL">Vente</option>
-              <option value="HOLD">Conserver</option>
-              <option value="REINFORCE">Renforcer</option>
-              <option value="CUT_LOSS">Couper perte</option>
-            </select>
-            <select name="trade_type">
-              <option value="TEST">Test</option>
-              <option value="SCALP">Scalp</option>
-              <option value="SWING">Swing</option>
-              <option value="LONG_TERM">Long terme</option>
-              <option value="FOMO">FOMO</option>
-              <option value="REVENGE">Revenge</option>
-            </select>
-            <select name="emotion">
-              <option value="CALM">Calme</option>
-              <option value="CONFIDENT">Confiant</option>
-              <option value="FOMO">FOMO</option>
-              <option value="FEAR">Peur</option>
-              <option value="IMPATIENT">Impatient</option>
-              <option value="STRESSED">Stressé</option>
-              <option value="GREED">Avidité</option>
-              <option value="REVENGE">Revanche</option>
-            </select>
-            <select name="result_status">
-              <option value="OPEN">Ouvert</option>
-              <option value="WIN">Win</option>
-              <option value="LOSS">Loss</option>
-              <option value="BREAKEVEN">Break-even</option>
-              <option value="CANCELLED">Annulé</option>
-            </select>
-            <input name="confidence" type="number" min="0" max="100" placeholder="Confiance">
-            <input name="pnl_percent" type="number" step="0.01" placeholder="PnL %">
-            <input name="pnl_usdc" type="number" step="0.01" placeholder="PnL USDC">
-            <input name="reason" placeholder="Raison">
-            <input name="notes" placeholder="Notes">
-            <button type="submit">Ajouter</button>
+            <label class="field"><span>Symbole</span><input name="symbol" placeholder="BTCUSDC" required></label>
+            <label class="field"><span>Décision</span>
+              <select name="decision_type">
+                <option value="WAIT">Attendre</option>
+                <option value="BUY">Achat</option>
+                <option value="SELL">Vente</option>
+                <option value="HOLD">Conserver</option>
+                <option value="REINFORCE">Renforcer</option>
+                <option value="CUT_LOSS">Couper perte</option>
+              </select>
+            </label>
+            <label class="field"><span>Type de trade</span>
+              <select name="trade_type">
+                <option value="TEST">Test</option>
+                <option value="SCALP">Scalp</option>
+                <option value="SWING">Swing</option>
+                <option value="LONG_TERM">Long terme</option>
+                <option value="FOMO">FOMO</option>
+                <option value="REVENGE">Revenge</option>
+              </select>
+            </label>
+            <label class="field"><span>Émotion</span>
+              <select name="emotion">
+                <option value="CALM">Calme</option>
+                <option value="CONFIDENT">Confiant</option>
+                <option value="FOMO">FOMO</option>
+                <option value="FEAR">Peur</option>
+                <option value="IMPATIENT">Impatient</option>
+                <option value="STRESSED">Stressé</option>
+                <option value="GREED">Avidité</option>
+                <option value="REVENGE">Revanche</option>
+              </select>
+            </label>
+            <label class="field"><span>Résultat</span>
+              <select name="result_status">
+                <option value="OPEN">Ouvert</option>
+                <option value="WIN">Win</option>
+                <option value="LOSS">Loss</option>
+                <option value="BREAKEVEN">Break-even</option>
+                <option value="CANCELLED">Annulé</option>
+              </select>
+            </label>
+            <label class="field"><span>Confiance</span><input name="confidence" type="number" min="0" max="100" placeholder="0 à 100"></label>
+            <label class="field"><span>PnL %</span><input name="pnl_percent" type="number" step="0.01" placeholder="Optionnel"></label>
+            <label class="field"><span>PnL USDC</span><input name="pnl_usdc" type="number" step="0.01" placeholder="Optionnel"></label>
+            <label class="field field-wide"><span>Raison</span><input name="reason" placeholder="Pourquoi cette décision ?"></label>
+            <label class="field field-wide"><span>Notes</span><input name="notes" placeholder="Ce que vous ressentez, ce que vous retenez"></label>
+            <div class="form-submit"><button type="submit" class="btn-primary">Ajouter</button></div>
           </form>
           <div id="journalStats" class="journal-stats"></div>
           <div id="journalFilters" class="journal-filters">
-            <input id="journalFilterSymbol" placeholder="Filtrer symbole">
-            <select id="journalFilterResult">
+            <input id="journalFilterSymbol" placeholder="Filtrer par symbole" aria-label="Filtrer par symbole">
+            <select id="journalFilterResult" aria-label="Filtrer par résultat">
               <option value="">Tous résultats</option>
               <option value="OPEN">Ouverts</option>
               <option value="WIN">Wins</option>
@@ -327,7 +353,7 @@
               <option value="BREAKEVEN">Break-even</option>
               <option value="CANCELLED">Annulés</option>
             </select>
-            <select id="journalFilterEmotion">
+            <select id="journalFilterEmotion" aria-label="Filtrer par émotion">
               <option value="">Toutes émotions</option>
               <option value="CALM">Calme</option>
               <option value="CONFIDENT">Confiant</option>
@@ -343,34 +369,35 @@
         </div>
       </section>
 
-      <section id="settingsModal" class="modal">
+      <section id="settingsModal" class="modal" aria-label="Paramètres">
         <div class="modal-content panel settings-panel">
           <div class="modal-header">
             <h2>Paramètres</h2>
-            <button type="button" data-close-modal>Fermer</button>
+            <button type="button" class="btn-ghost icon icon-close" data-close-modal>Fermer</button>
           </div>
           <div class="settings-content">
             <div class="detail-box">
               <h3>Binance lecture seule</h3>
               <div class="kv-grid">
-                <span>Statut :</span><strong id="settingsBinanceStatus">-</strong>
-                <span>Mode :</span><strong>Lecture seule</strong>
-                <span>Seuil position active :</span><strong>1 USDC</strong>
-                <span>Version :</span><strong>V4</strong>
+                <span>Statut</span><strong id="settingsBinanceStatus">-</strong>
+                <span>Mode</span><strong>Lecture seule</strong>
+                <span>Seuil position active</span><strong>1 USDC</strong>
+                <span>Version</span><strong>V4</strong>
               </div>
               <div class="settings-actions">
-                <button id="settingsSyncButton" type="button">Synchroniser Binance</button>
+                <button id="settingsSyncButton" class="icon icon-sync" type="button">Synchroniser Binance</button>
               </div>
             </div>
             <div class="detail-box danger-zone">
               <h3>Maintenance locale</h3>
               <p>Le reset supprime les données locales et conserve les données marché live via Binance public.</p>
-              {% if not destructive_enabled %}<p>Operations destructives desactivees par configuration.</p>{% endif %}
+              {% if not destructive_enabled %}<p>Opérations destructives désactivées par configuration.</p>{% endif %}
               <form id="adminResetForm" method="post" action="/api/admin/reset?reset_watchlist=false" class="settings-actions">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="confirmation" value="RESET">
                 {% if destructive_enabled %}
-                <label>Confirmez votre mot de passe
+                <label class="field">
+                  <span>Confirmez votre mot de passe</span>
                   <input type="password" name="password" autocomplete="current-password" required maxlength="1024">
                 </label>
                 {% endif %}
@@ -385,4 +412,3 @@
     <script src="/static/app.js?v={{ app_version }}"></script>
   </body>
 </html>
-
